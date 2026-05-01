@@ -1,0 +1,4 @@
+__pycache__
+completion-checks/
+.env
+.DS_Store

@@ -1,0 +1,9 @@
+[project]
+name = "dummer"
+version = "0.1.0"
+description = "Inventory, reconcile, and upload workflow utilities for DUM-style ingestion."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+dummer = "dummer.cli:main"
