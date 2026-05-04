@@ -9,6 +9,7 @@ import subprocess
 import termios
 import fcntl
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Tuple
 
@@ -16,20 +17,37 @@ from .console import ProgressHeartbeat, log, write_raw
 from .utils import sanitize_path
 
 
-def parse_ingress_report(report_file: Path) -> bool:
+@dataclass(frozen=True)
+class IngressReportValidation:
+    valid: bool
+    total_uploaded: int = 0
+    total_skipped: int = 0
+    total_failed: int = 0
+    total_unprocessed: int = 0
+    total_files: int = 0
+
+    def __bool__(self) -> bool:
+        return self.valid
+
+    @property
+    def processed_count(self) -> int:
+        return self.total_uploaded + self.total_skipped
+
+
+def parse_ingress_report(report_file: Path, *, expected_total_files: int | None = None) -> IngressReportValidation:
     if not report_file.is_file():
         log(f"Error: Report file not found: {report_file}")
-        return False
+        return IngressReportValidation(valid=False)
 
     try:
         parsed = json.loads(report_file.read_text(encoding="utf-8"))
     except OSError as exc:
         log(f"Error: Could not read report file: {exc}")
-        return False
+        return IngressReportValidation(valid=False)
     except json.JSONDecodeError as exc:
         log(f"Error: Could not parse report JSON: {exc}")
         log("Parsed: Uploaded='' Skipped='' Failed='' Unprocessed='' Files=''")
-        return False
+        return IngressReportValidation(valid=False)
 
     def val(key: str) -> int:
         raw = parsed.get(key, 0)
@@ -61,7 +79,16 @@ def parse_ingress_report(report_file: Path) -> bool:
                 parsed.get("Total Files", ""),
             )
         )
-        return False
+        return IngressReportValidation(valid=False)
+
+    result = IngressReportValidation(
+        valid=False,
+        total_uploaded=total_uploaded,
+        total_skipped=total_skipped,
+        total_failed=total_failed,
+        total_unprocessed=total_unprocessed,
+        total_files=total_files,
+    )
 
     log(
         f"Report totals - Uploaded: {total_uploaded}, Skipped: {total_skipped}, "
@@ -71,14 +98,28 @@ def parse_ingress_report(report_file: Path) -> bool:
     accounted = total_uploaded + total_skipped + total_failed + total_unprocessed
     if accounted != total_files:
         log(f"Upload validation failed: totals mismatch (accounted={accounted}, files={total_files})")
-        return False
+        return result
+
+    if expected_total_files is not None and total_files != expected_total_files:
+        log(
+            "Upload validation failed: report file count does not match local inventory "
+            f"(report_files={total_files}, local_files={expected_total_files})"
+        )
+        return result
 
     if total_failed == 0 and total_unprocessed == 0 and total_files > 0:
         log("Upload validation successful")
-        return True
+        return IngressReportValidation(
+            valid=True,
+            total_uploaded=total_uploaded,
+            total_skipped=total_skipped,
+            total_failed=total_failed,
+            total_unprocessed=total_unprocessed,
+            total_files=total_files,
+        )
 
     log(f"Upload validation failed: failed={total_failed}, unprocessed={total_unprocessed}")
-    return False
+    return result
 
 
 def build_command(

@@ -127,6 +127,23 @@ class DumCommandTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("not a boolean", buffer.getvalue())
 
+    def test_parse_ingress_report_rejects_unexpected_total_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            report = Path(tmp) / "report.json"
+            report.write_text(
+                '{"Total Failed": 0, "Total Files": 3, "Total Uploaded": 3, '
+                '"Total Skipped": 0, "Total Unprocessed": 0}',
+                encoding="utf-8",
+            )
+
+            buffer = io.StringIO()
+            with redirect_stdout(buffer):
+                ok = parse_ingress_report(report, expected_total_files=4)
+
+            self.assertFalse(ok)
+            self.assertEqual(ok.processed_count, 3)
+            self.assertIn("report file count does not match local inventory", buffer.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

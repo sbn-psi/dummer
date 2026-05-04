@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import shlex
+from copy import deepcopy
 from argparse import Namespace
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .console import log, write_raw
@@ -13,7 +14,7 @@ from .inventory import (
     parse_inventory_manifest_to_state_file,
     public_s3_inventory_to_state_file,
 )
-from .reconcile import ReconcileResult, reconcile, summarize_reconciliation
+from .reconcile import ReconcileItem, ReconcileResult, reconcile, summarize_reconciliation
 from .reporting import PipelineReportWriter
 from .state import read_state_file, set_state_entry
 from .utils import report_safe_name, sanitize_path
@@ -168,6 +169,66 @@ def _drift_report_items(reconciled: ReconcileResult) -> list[dict[str, Any]]:
     ]
 
 
+def _increment_completed_directory_in_summary(
+    summary: list[dict[str, Any]],
+    item: ReconcileItem,
+    *,
+    summary_anchor_component: int | None = None,
+) -> None:
+    if not summary:
+        return
+
+    anchor = "all"
+    if summary_anchor_component is not None:
+        parts = tuple(p for p in PurePosixPath(item.rel_dir).parts if p and p != "/")
+        idx = summary_anchor_component if summary_anchor_component >= 0 else len(parts) + summary_anchor_component
+        anchor = parts[idx] if 0 <= idx < len(parts) else ""
+
+    old_processed_files = max(0, min(item.processed_count or 0, item.local_count))
+    processed_file_delta = item.local_count - old_processed_files
+
+    for bucket in summary:
+        if bucket.get("anchor") != anchor:
+            continue
+        directories = bucket.get("directories", {})
+        files = bucket.get("files", {})
+        directories["processed"] = directories.get("processed", 0) + 1
+        directories["missing"] = max(0, directories.get("missing", 0) - 1)
+        files["processed"] = files.get("processed", 0) + processed_file_delta
+        files["missing"] = max(0, files.get("missing", 0) - processed_file_delta)
+        return
+
+
+def _increment_processed_files_in_summary(
+    summary: list[dict[str, Any]],
+    item: ReconcileItem,
+    new_processed_count: int,
+    *,
+    summary_anchor_component: int | None = None,
+) -> None:
+    if not summary:
+        return
+
+    anchor = "all"
+    if summary_anchor_component is not None:
+        parts = tuple(p for p in PurePosixPath(item.rel_dir).parts if p and p != "/")
+        idx = summary_anchor_component if summary_anchor_component >= 0 else len(parts) + summary_anchor_component
+        anchor = parts[idx] if 0 <= idx < len(parts) else ""
+
+    old_processed_files = max(0, min(item.processed_count or 0, item.local_count))
+    processed_file_delta = max(0, min(new_processed_count, item.local_count) - old_processed_files)
+    if processed_file_delta == 0:
+        return
+
+    for bucket in summary:
+        if bucket.get("anchor") != anchor:
+            continue
+        files = bucket.get("files", {})
+        files["processed"] = files.get("processed", 0) + processed_file_delta
+        files["missing"] = max(0, files.get("missing", 0) - processed_file_delta)
+        return
+
+
 def build_upload_options_from_namespace(ns: Namespace) -> UploadOptions:
     return UploadOptions(
         local_path=getattr(ns, "local_path", None),
@@ -192,7 +253,9 @@ def upload_from_reconcile_result(
     options: UploadOptions,
     script_name: str = "dummer",
     reconciliation_summary: list[dict[str, Any]] | None = None,
+    summary_anchor_component: int | None = None,
 ) -> int:
+    current_reconciliation_summary = deepcopy(reconciliation_summary or [])
     if not reconciled.pending:
         log("No new, unprocessed directories found to process.")
         if reconciled.drift:
@@ -202,7 +265,7 @@ def upload_from_reconcile_result(
             writer = PipelineReportWriter(options.pipeline_report_dir, script_name)
             ctx = writer.new_context()
             ctx.status = "no_work_found"
-            ctx.reconciliation_summary = list(reconciliation_summary or [])
+            ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
             ctx.reconciliation_drift = _drift_report_items(reconciled)
             writer.write(ctx)
         return 0
@@ -230,11 +293,12 @@ def upload_from_reconcile_result(
         log(f"Reconcile drift found {len(reconciled.drift)} directories with processed_count > local_count.")
 
     limit = len(reconciled.pending) if options.loop else max(1, options.max_dirs)
+    partial_failures = 0
 
     for item in reconciled.pending[:limit]:
         ctx = writer.new_context()
         ctx.directory_processed = item.rel_dir
-        ctx.reconciliation_summary = list(reconciliation_summary or [])
+        ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
         ctx.reconciliation_drift = _drift_report_items(reconciled)
 
         log(f"Found candidate directory to process from reconcile step: {item.rel_dir}")
@@ -277,12 +341,44 @@ def upload_from_reconcile_result(
         if exit_code == 0:
             log("Command finished successfully.")
             log("Validating upload success by parsing report...")
-            if parse_ingress_report(report_path):
+            validation = parse_ingress_report(report_path, expected_total_files=item.local_count)
+            if validation:
                 set_state_entry(processed_state, item.rel_dir, item.local_count)
+                _increment_completed_directory_in_summary(
+                    current_reconciliation_summary,
+                    item,
+                    summary_anchor_component=summary_anchor_component,
+                )
                 ctx.status = "processing_succeeded"
+                ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
                 log("Processing completed successfully.")
                 writer.write(ctx)
                 continue
+
+            partial_processed_count = 0
+            if not isinstance(validation, bool):
+                partial_processed_count = min(validation.processed_count, item.local_count)
+            previous_processed_count = item.processed_count or 0
+            if 0 < partial_processed_count < item.local_count and partial_processed_count > previous_processed_count:
+                set_state_entry(processed_state, item.rel_dir, partial_processed_count)
+                _increment_processed_files_in_summary(
+                    current_reconciliation_summary,
+                    item,
+                    partial_processed_count,
+                    summary_anchor_component=summary_anchor_component,
+                )
+                ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
+                partial_failures += 1
+                ctx.status = "partial_processed"
+                log(
+                    "Partial upload progress recorded: "
+                    f"processed={partial_processed_count}, local={item.local_count}. "
+                    "Directory remains pending for a future reconcile."
+                )
+                writer.write(ctx)
+                if options.loop:
+                    continue
+                return 1
 
             log("Error: Upload validation failed. Directory will be retried on next run.")
             ctx.status = "validation_failed"
@@ -304,10 +400,13 @@ def upload_from_reconcile_result(
         return 1
 
     if options.loop:
+        if partial_failures:
+            log(f"Completed loop with {partial_failures} partial directorie(s); pending work remains for next run.")
+            return 1
         log("No new, unprocessed directories found to process.")
         ctx = writer.new_context()
         ctx.status = "no_work_found"
-        ctx.reconciliation_summary = list(reconciliation_summary or [])
+        ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
         ctx.reconciliation_drift = _drift_report_items(reconciled)
         writer.write(ctx)
     else:

@@ -69,6 +69,7 @@ def main(argv: list[str] | None = None) -> int:
             build_upload_options_from_namespace(ns),
             script_name="dummer_upload",
             reconciliation_summary=summary,
+            summary_anchor_component=ns.summary_anchor_component,
         )
     except ValueError as exc:
         p.error(str(exc))

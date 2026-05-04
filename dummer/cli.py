@@ -230,6 +230,7 @@ def main(argv: list[str] | None = None) -> int:
             options,
             script_name="dummer",
             reconciliation_summary=summary,
+            summary_anchor_component=ns.summary_anchor_component,
         )
     except ValueError as exc:
         log(f"Error: {exc}")
