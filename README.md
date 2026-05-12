@@ -113,6 +113,8 @@ inventory runs. They are not the normal starting point.
 | `DUMMER_PROCESSED_S3_MAX_RETRIES` | `--processed-s3-max-retries` | Max retries for public S3 list requests. |
 | `DUMMER_PROCESSED_S3_RETRY_DELAY_SECONDS` | `--processed-s3-retry-delay-seconds` | Base retry delay for public S3 list requests. |
 | `DUMMER_PATH_FILTER_DEPTH` | `--path-filter-depth` | Optional crawl-only pruning hint: depth where the path filter is expected. |
+| `DUMMER_CRAWL_MIN_DEPTH` | `--crawl-min-depth` | Optional minimum relative directory depth for filesystem crawl inventory. |
+| `DUMMER_CRAWL_MAX_DEPTH` | `--crawl-max-depth` | Optional maximum relative directory depth for filesystem crawl inventory. |
 | `DUMMER_SUMMARY_ANCHOR_COMPONENT` | `--summary-anchor-component` | Path component index used as the reconciliation summary anchor. |
 | `DUMMER_PREFIX` | `--prefix` | Override the DUM `--prefix` value. If omitted, dummer uses the parent of `--local-path`. |
 | `DUMMER_BUNDLE` | `--bundle` | Optional label retained for compatibility with existing reports/config; upload paths are rooted at `--local-path`. |
@@ -188,6 +190,14 @@ When `--path-filter` is provided, inventory and upload steps only keep directori
 relative path contains that exact component. Crawl mode does not prune by default. If the
 filter is known to live at a specific path depth, `--path-filter-depth N` enables generic
 sibling pruning as a performance hint.
+
+Filesystem crawl inventory can also be limited by relative directory depth. Direct files
+under the crawl root are counted under the `.` state key at depth `0`. Direct child
+directories under the crawl root are depth `1`, grandchildren are depth `2`, and so on.
+Use `--crawl-max-depth 1` to inventory root files and direct child directories without
+descending into grandchildren. Use `--crawl-max-depth 0` to inventory only root files.
+`--crawl-min-depth` skips shallower directories while still walking deeper ones until
+`--crawl-max-depth` is reached.
 
 ## Examples
 

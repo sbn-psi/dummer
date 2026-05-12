@@ -61,6 +61,8 @@ class CliConfigTests(unittest.TestCase):
                     [
                         "DUMMER_PATH_FILTER=2026",
                         "DUMMER_PATH_FILTER_DEPTH=2",
+                        "DUMMER_CRAWL_MIN_DEPTH=2",
+                        "DUMMER_CRAWL_MAX_DEPTH=4",
                         "DUMMER_SUMMARY_ANCHOR_COMPONENT=2",
                         "DUMMER_THREADS=9",
                         "DUMMER_PROCESSED_S3_RESUME_FROM_STATE=true",
@@ -75,6 +77,8 @@ class CliConfigTests(unittest.TestCase):
 
             self.assertEqual(ns.path_filter, "2026")
             self.assertEqual(ns.path_filter_depth, 2)
+            self.assertEqual(ns.crawl_min_depth, 2)
+            self.assertEqual(ns.crawl_max_depth, 4)
             self.assertEqual(ns.summary_anchor_component, 2)
             self.assertEqual(ns.threads, 9)
             self.assertTrue(ns.processed_s3_resume_from_state)
@@ -113,6 +117,59 @@ class CliConfigTests(unittest.TestCase):
             self.assertEqual(ns.local_path, str(local_path))
             self.assertEqual(ns.processed_state, str(processed_state))
             self.assertIsNone(ns.processed_s3_bucket)
+
+    def test_relative_configured_state_paths_are_resolved_from_script_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            script_dir = base / "script"
+            cron_cwd = base / "home"
+            script_dir.mkdir()
+            cron_cwd.mkdir()
+            dotenv_path = script_dir / ".env"
+            dotenv_path.write_text(
+                "\n".join(
+                    [
+                        "DUMMER_LOCAL_STATE=./local_dirs.txt",
+                        "DUMMER_PROCESSED_STATE=./processed_dirs.txt",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            (script_dir / "local_dirs.txt").write_text("a\t1\n", encoding="utf-8")
+            (script_dir / "processed_dirs.txt").write_text("a\t1\n", encoding="utf-8")
+
+            captured: dict[str, Path] = {}
+
+            def _capture_artifacts(local_state, processed_state, **_kwargs):
+                captured["local_state"] = local_state
+                captured["processed_state"] = processed_state
+                return ReconcileArtifacts(
+                    local_inventory={"a": 1},
+                    processed_inventory={"a": 1},
+                    result=ReconcileResult(pending=[], drift=[]),
+                    summary=[],
+                )
+
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(cron_cwd)
+                with patch.dict(os.environ, {}, clear=True):
+                    with patch("dummer.cli.load_reconcile_artifacts", side_effect=_capture_artifacts):
+                        exit_code = cli.main(
+                            [
+                                "--script-dir",
+                                str(script_dir),
+                                "--pipeline-report-dir",
+                                "",
+                            ]
+                        )
+            finally:
+                os.chdir(previous_cwd)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(captured["local_state"], script_dir / "local_dirs.txt")
+            self.assertEqual(captured["processed_state"], script_dir / "processed_dirs.txt")
 
     def test_local_state_wins_over_configured_local_path_for_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

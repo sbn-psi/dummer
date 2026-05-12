@@ -18,6 +18,8 @@ def _build_local_spec(ns: argparse.Namespace) -> InventoryBuildSpec:
         manifest_path=ns.local_manifest,
         root=ns.local_root,
         path_filter_depth=ns.path_filter_depth,
+        crawl_min_depth=ns.crawl_min_depth,
+        crawl_max_depth=ns.crawl_max_depth,
     )
 
 
@@ -44,6 +46,8 @@ def _build_processed_spec(ns: argparse.Namespace) -> InventoryBuildSpec:
         s3_known_dirs_workers=ns.processed_s3_known_dirs_workers,
         s3_resume_cluster_depth=ns.processed_s3_resume_cluster_depth,
         path_filter_depth=ns.path_filter_depth,
+        crawl_min_depth=ns.crawl_min_depth,
+        crawl_max_depth=ns.crawl_max_depth,
     )
 
 

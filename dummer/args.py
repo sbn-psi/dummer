@@ -12,6 +12,18 @@ def add_path_filter_args(parser: argparse.ArgumentParser, defaults: Mapping[str,
         default=defaults.get("path_filter_depth"),
         help="Optional path component depth for crawl-mode sibling pruning",
     )
+    parser.add_argument(
+        "--crawl-min-depth",
+        type=int,
+        default=defaults.get("crawl_min_depth"),
+        help="Optional minimum relative directory depth for filesystem crawl inventory",
+    )
+    parser.add_argument(
+        "--crawl-max-depth",
+        type=int,
+        default=defaults.get("crawl_max_depth"),
+        help="Optional maximum relative directory depth for filesystem crawl inventory",
+    )
 
 
 def add_summary_args(parser: argparse.ArgumentParser, defaults: Mapping[str, object]) -> None:

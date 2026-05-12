@@ -98,7 +98,7 @@ def _relative_dir_from_manifest_path(raw_path: str, bundle_root: str | None) -> 
         rel_parts = parts[1:-1]
 
     if not rel_parts:
-        return None
+        return "."
 
     return PurePosixPath(*rel_parts).as_posix()
 
@@ -137,10 +137,13 @@ def _candidate_rel_dir_from_path(
     candidate = raw_path.strip()
     if not candidate or candidate.endswith("/"):
         return None
-    if path_filter and not _path_contains_component(candidate, path_filter):
-        return None
 
-    return _relative_dir_from_manifest_path(candidate, bundle_root)
+    rel_dir = _relative_dir_from_manifest_path(candidate, bundle_root)
+    if rel_dir is None:
+        return None
+    if path_filter and not _contains_path_component(rel_dir, path_filter):
+        return None
+    return rel_dir
 
 
 def _relative_dir_from_directory_path(raw_path: str, bundle_root: str | None) -> str | None:
@@ -699,13 +702,24 @@ def crawl_inventory_to_state_file_with_options(
     out_path: Path,
     path_filter: str | None = None,
     path_filter_depth: int | None = None,
+    crawl_min_depth: int | None = None,
+    crawl_max_depth: int | None = None,
 ) -> int:
     """
     Stream direct-file directory inventory directly to disk.
     When path_filter_depth is provided, sibling subtrees whose component at
     that depth cannot match path_filter are skipped early.
+    Crawl depth is counted from the crawl root's children: direct child
+    directories are depth 1, grandchildren are depth 2.
     Returns the number of written entries.
     """
+    if crawl_min_depth is not None and crawl_min_depth < 0:
+        raise ValueError("--crawl-min-depth must be 0 or greater")
+    if crawl_max_depth is not None and crawl_max_depth < 0:
+        raise ValueError("--crawl-max-depth must be 0 or greater")
+    if crawl_min_depth is not None and crawl_max_depth is not None and crawl_min_depth > crawl_max_depth:
+        raise ValueError("--crawl-min-depth cannot be greater than --crawl-max-depth")
+
     base = Path(sanitize_path(bundle_path))
     if not base.is_dir():
         raise FileNotFoundError(f"Base directory does not exist: {base}")
@@ -723,6 +737,10 @@ def crawl_inventory_to_state_file_with_options(
             rel_parts: tuple[str, ...] = ()
         else:
             rel_parts = root_path.relative_to(base).parts
+        depth = len(rel_parts)
+
+        if crawl_max_depth is not None and depth >= crawl_max_depth:
+            dirs[:] = []
 
         if _should_prune_path_filter_sibling(rel_parts, path_filter, path_filter_depth):
             dirs[:] = []
@@ -733,15 +751,6 @@ def crawl_inventory_to_state_file_with_options(
             )
             continue
 
-        if root_path == base:
-            writer.maybe_flush()
-            heartbeat.notify_activity()
-            heartbeat.maybe_emit(
-                f"directories_scanned={scanned}, directories_written={written}, snapshots={writer.snapshots_written}"
-            )
-            continue
-
-        rel = root_path.relative_to(base).as_posix()
         if path_filter and path_filter not in rel_parts:
             writer.maybe_flush()
             heartbeat.notify_activity()
@@ -750,6 +759,15 @@ def crawl_inventory_to_state_file_with_options(
             )
             continue
 
+        if crawl_min_depth is not None and depth < crawl_min_depth:
+            writer.maybe_flush()
+            heartbeat.notify_activity()
+            heartbeat.maybe_emit(
+                f"directories_scanned={scanned}, directories_written={written}, snapshots={writer.snapshots_written}"
+            )
+            continue
+
+        rel = "." if root_path == base else root_path.relative_to(base).as_posix()
         if not files:
             writer.maybe_flush()
             heartbeat.notify_activity()

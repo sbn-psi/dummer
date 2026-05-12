@@ -126,6 +126,13 @@ def _generated_state_path(script_dir: Path, source: str, side: str) -> Path:
     return script_dir / "processed_s3_dirs.txt"
 
 
+def _configured_state_path(raw_path: str, script_dir: Path) -> Path:
+    path = Path(raw_path)
+    if path.is_absolute():
+        return path
+    return script_dir / path
+
+
 def _local_build_spec(ns: argparse.Namespace, local_state: Path) -> InventoryBuildSpec:
     mode = "parse" if ns.local_manifest else "crawl"
     return InventoryBuildSpec(
@@ -135,6 +142,8 @@ def _local_build_spec(ns: argparse.Namespace, local_state: Path) -> InventoryBui
         manifest_path=ns.local_manifest,
         root=ns.local_root,
         path_filter_depth=ns.path_filter_depth,
+        crawl_min_depth=ns.crawl_min_depth,
+        crawl_max_depth=ns.crawl_max_depth,
     )
 
 
@@ -161,6 +170,8 @@ def _processed_build_spec(ns: argparse.Namespace, processed_state: Path) -> Inve
         s3_known_dirs_workers=ns.processed_s3_known_dirs_workers,
         s3_resume_cluster_depth=ns.processed_s3_resume_cluster_depth,
         path_filter_depth=ns.path_filter_depth,
+        crawl_min_depth=ns.crawl_min_depth,
+        crawl_max_depth=ns.crawl_max_depth,
     )
 
 
@@ -183,12 +194,12 @@ def main(argv: list[str] | None = None) -> int:
     ensure_dir(script_dir, "script directory")
 
     local_state = (
-        Path(ns.local_state)
+        _configured_state_path(ns.local_state, script_dir)
         if local_source == "local_state"
         else _generated_state_path(script_dir, local_source, "local")
     )
     processed_state = (
-        Path(ns.processed_state)
+        _configured_state_path(ns.processed_state, script_dir)
         if processed_source == "processed_state"
         else _generated_state_path(script_dir, processed_source, "processed")
     )

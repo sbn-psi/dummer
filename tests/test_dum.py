@@ -13,15 +13,14 @@ from dummer.dum import build_command, build_direct_file_only_exclude_patterns, e
 class DumCommandTests(unittest.TestCase):
     def test_builds_direct_file_only_exclude_patterns(self) -> None:
         patterns = build_direct_file_only_exclude_patterns(
-            full_path="/dsk8/catalina/gbo.ast.catalina.survey/collection/2025/parent",
+            full_path="/dsk8/catalina/gbo.ast.catalina.survey/miscellaneous/I52/2023/23Dec11",
             bundle_prefix="/dsk8/catalina",
         )
 
         self.assertEqual(
             patterns,
             [
-                "/dsk8/catalina/gbo.ast.catalina.survey/collection/2025/parent/*/*",
-                "gbo.ast.catalina.survey/collection/2025/parent/*/*",
+                "/dsk8/catalina/gbo.ast.catalina.survey/miscellaneous/I52/2023/23Dec11/*/*",
             ],
         )
 

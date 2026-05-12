@@ -37,6 +37,8 @@ class InventoryBuildSpec:
     s3_known_dirs_workers: int = 10
     s3_resume_cluster_depth: int = 2
     path_filter_depth: int | None = None
+    crawl_min_depth: int | None = None
+    crawl_max_depth: int | None = None
 
 
 @dataclass(frozen=True)
@@ -80,6 +82,8 @@ def build_inventory_state(spec: InventoryBuildSpec, path_filter: str | None = No
             spec.out_path,
             path_filter=path_filter,
             path_filter_depth=spec.path_filter_depth,
+            crawl_min_depth=spec.crawl_min_depth,
+            crawl_max_depth=spec.crawl_max_depth,
         )
 
     if spec.mode == "parse":

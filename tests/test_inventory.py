@@ -8,12 +8,80 @@ from dummer.inventory import (
     _path_contains_component,
     _resume_trusted_counts_and_cluster,
     crawl_inventory_to_state_file_with_options,
+    parse_inventory_manifest_to_state_file,
     _load_known_s3_directories,
 )
 from dummer.state import read_state_file
 
 
 class InventoryTests(unittest.TestCase):
+    def test_crawl_counts_root_files_as_dot_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            child.mkdir(parents=True)
+            (base / "root_a.dat").write_text("a", encoding="utf-8")
+            (base / "root_b.dat").write_text("b", encoding="utf-8")
+            (child / "child.dat").write_text("c", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(str(base), out_path)
+
+            self.assertEqual(written, 2)
+            self.assertEqual(read_state_file(out_path), {".": 2, "collection": 1})
+
+    def test_crawl_max_depth_zero_keeps_only_root_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            child.mkdir(parents=True)
+            (base / "root.dat").write_text("a", encoding="utf-8")
+            (child / "child.dat").write_text("b", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(
+                str(base),
+                out_path,
+                crawl_max_depth=0,
+            )
+
+            self.assertEqual(written, 1)
+            self.assertEqual(read_state_file(out_path), {".": 1})
+
+    def test_path_filter_excludes_dot_root_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection" / "2026"
+            child.mkdir(parents=True)
+            (base / "root.dat").write_text("a", encoding="utf-8")
+            (child / "child.dat").write_text("b", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(str(base), out_path, path_filter="2026")
+
+            self.assertEqual(written, 1)
+            self.assertEqual(read_state_file(out_path), {"collection/2026": 1})
+
+    def test_manifest_counts_root_files_as_dot_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "manifest.txt"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "bundle/root_a.dat",
+                        "bundle/root_b.dat",
+                        "bundle/collection/child.dat",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            out_path = Path(tmp) / "state.txt"
+            written = parse_inventory_manifest_to_state_file(str(manifest), out_path)
+
+            self.assertEqual(written, 2)
+            self.assertEqual(read_state_file(out_path), {".": 2, "collection": 1})
+
     def test_crawl_counts_direct_files_for_non_leaf_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "bundle"
@@ -95,6 +163,76 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(read_state_file(no_prune_out), {"collection/not-the-filter/2025/parent": 1})
             self.assertEqual(pruned_written, 0)
             self.assertEqual(read_state_file(pruned_out), {})
+
+    def test_crawl_max_depth_limits_recursive_inventory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            grandchild = child / "2026"
+            great_grandchild = grandchild / "leaf"
+            great_grandchild.mkdir(parents=True)
+            (child / "a.dat").write_text("a", encoding="utf-8")
+            (grandchild / "b.dat").write_text("b", encoding="utf-8")
+            (great_grandchild / "c.dat").write_text("c", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(
+                str(base),
+                out_path,
+                crawl_max_depth=1,
+            )
+
+            self.assertEqual(written, 1)
+            self.assertEqual(read_state_file(out_path), {"collection": 1})
+
+    def test_crawl_min_and_max_depth_keep_only_depth_range(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            grandchild = child / "2026"
+            great_grandchild = grandchild / "leaf"
+            great_grandchild.mkdir(parents=True)
+            (child / "a.dat").write_text("a", encoding="utf-8")
+            (grandchild / "b.dat").write_text("b", encoding="utf-8")
+            (great_grandchild / "c.dat").write_text("c", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(
+                str(base),
+                out_path,
+                crawl_min_depth=2,
+                crawl_max_depth=2,
+            )
+
+            self.assertEqual(written, 1)
+            self.assertEqual(read_state_file(out_path), {"collection/2026": 1})
+
+    def test_crawl_min_depth_cannot_exceed_max_depth(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            base.mkdir()
+            out_path = Path(tmp) / "state.txt"
+
+            with self.assertRaisesRegex(ValueError, "cannot be greater"):
+                crawl_inventory_to_state_file_with_options(
+                    str(base),
+                    out_path,
+                    crawl_min_depth=3,
+                    crawl_max_depth=2,
+                )
+
+    def test_crawl_depth_cannot_be_negative(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            base.mkdir()
+            out_path = Path(tmp) / "state.txt"
+
+            with self.assertRaisesRegex(ValueError, "0 or greater"):
+                crawl_inventory_to_state_file_with_options(
+                    str(base),
+                    out_path,
+                    crawl_min_depth=-1,
+                )
 
     def test_resume_cluster_depth_is_configurable(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

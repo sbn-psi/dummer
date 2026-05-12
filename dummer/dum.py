@@ -157,23 +157,7 @@ def build_command(
 
 def build_direct_file_only_exclude_patterns(full_path: str, bundle_prefix: str) -> list[str]:
     normalized_full_path = sanitize_path(full_path)
-    normalized_prefix = sanitize_path(bundle_prefix)
-
-    patterns = [f"{normalized_full_path}/*/*"]
-    prefix_with_sep = f"{normalized_prefix}/"
-    if normalized_full_path.startswith(prefix_with_sep):
-        trimmed = normalized_full_path[len(prefix_with_sep) :]
-        if trimmed:
-            patterns.append(f"{trimmed}/*/*")
-
-    deduped: list[str] = []
-    seen: set[str] = set()
-    for pattern in patterns:
-        if pattern in seen:
-            continue
-        deduped.append(pattern)
-        seen.add(pattern)
-    return deduped
+    return [f"{normalized_full_path}/*/*"]
 
 
 def _execute_command_captured(command: list[str]) -> Tuple[int, str]:
