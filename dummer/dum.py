@@ -11,7 +11,7 @@ import fcntl
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Tuple
+from typing import Iterable, Sequence, Tuple
 
 from .console import ProgressHeartbeat, log, write_raw
 from .utils import sanitize_path
@@ -129,11 +129,12 @@ def build_command(
     bundle_prefix: str,
     config_file: str,
     name_param: str,
-    full_path: str,
+    full_path: str | Sequence[str],
     num_threads: int,
     report_path: str,
     exclude_patterns: Iterable[str] = (),
 ) -> list[str]:
+    ingress_paths = [full_path] if isinstance(full_path, str) else list(full_path)
     command = [
         dum_binary,
         "--log-level",
@@ -144,7 +145,7 @@ def build_command(
         config_file,
         "-n",
         name_param,
-        full_path,
+        *ingress_paths,
         "--num-threads",
         str(num_threads),
         "--report-path",
@@ -158,6 +159,26 @@ def build_command(
 def build_direct_file_only_exclude_patterns(full_path: str, bundle_prefix: str) -> list[str]:
     normalized_full_path = sanitize_path(full_path)
     return [f"{normalized_full_path}/*/*"]
+
+
+def direct_file_paths(directory: str) -> list[str]:
+    base = Path(sanitize_path(directory))
+    return sorted(str(child) for child in base.iterdir() if child.is_file())
+
+
+def command_size_bytes(command: Sequence[str], environ: dict[str, str] | None = None) -> int:
+    env = os.environ if environ is None else environ
+    argv_size = sum(len(arg.encode("utf-8")) + 1 for arg in command)
+    env_size = sum(len(f"{key}={value}".encode("utf-8")) + 1 for key, value in env.items())
+    return argv_size + env_size
+
+
+def command_size_limit_bytes(safety_margin: int = 32768) -> int:
+    try:
+        arg_max = os.sysconf("SC_ARG_MAX")
+    except (AttributeError, ValueError, OSError):
+        arg_max = 262144
+    return max(0, int(arg_max) - safety_margin)
 
 
 def _execute_command_captured(command: list[str]) -> Tuple[int, str]:

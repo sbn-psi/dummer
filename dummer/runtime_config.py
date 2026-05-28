@@ -39,6 +39,8 @@ DEFAULTS: dict[str, object] = {
     "script_dir": ".",
     "log_level": "warn",
     "interactive": False,
+    "direct_file_list_upload": False,
+    "direct_file_list_batch_size": 500,
     "local_state": None,
     "processed_state": None,
     "max_dirs": 1,
@@ -77,6 +79,8 @@ ENV_VAR_NAMES: dict[str, str] = {
     "script_dir": "DUMMER_SCRIPT_DIR",
     "log_level": "DUMMER_LOG_LEVEL",
     "interactive": "DUMMER_INTERACTIVE",
+    "direct_file_list_upload": "DUMMER_DIRECT_FILE_LIST_UPLOAD",
+    "direct_file_list_batch_size": "DUMMER_DIRECT_FILE_LIST_BATCH_SIZE",
     "local_state": "DUMMER_LOCAL_STATE",
     "processed_state": "DUMMER_PROCESSED_STATE",
     "max_dirs": "DUMMER_MAX_DIRS",
@@ -108,6 +112,7 @@ def coerce_config_value(dest: str, raw: str) -> object:
     if dest in {
         "processed_s3_resume_from_state",
         "interactive",
+        "direct_file_list_upload",
         "loop",
     }:
         return parse_bool(raw)
@@ -120,6 +125,7 @@ def coerce_config_value(dest: str, raw: str) -> object:
         "summary_anchor_component",
         "threads",
         "max_dirs",
+        "direct_file_list_batch_size",
         "processed_s3_max_retries",
     }:
         return int(raw)

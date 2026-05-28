@@ -52,6 +52,18 @@ def add_upload_args(parser: argparse.ArgumentParser, defaults: Mapping[str, obje
         default=defaults.get("interactive"),
         help="Run DUM on a pseudo-terminal and stream its live interactive output",
     )
+    parser.add_argument(
+        "--direct-file-list-upload",
+        action="store_true",
+        default=defaults.get("direct_file_list_upload"),
+        help="Pass each pending directory's direct files to DUM instead of the directory path",
+    )
+    parser.add_argument(
+        "--direct-file-list-batch-size",
+        type=int,
+        default=defaults.get("direct_file_list_batch_size"),
+        help="Maximum number of direct file paths to pass to DUM per command in direct file-list mode",
+    )
     parser.add_argument("--max-dirs", type=int, default=defaults.get("max_dirs"), help="How many pending dirs to process this run")
     parser.add_argument(
         "-L",

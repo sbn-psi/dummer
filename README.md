@@ -91,6 +91,8 @@ command line unless noted otherwise.
 | `DUMMER_SCRIPT_DIR` | `--script-dir` | Base directory for default state file paths and `.env` discovery. |
 | `DUMMER_MAX_DIRS` | `--max-dirs` | Number of pending directories to upload in a non-loop run. |
 | `DUMMER_LOOP` | `--loop` | Continue uploading until failure or exhaustion. Boolean. |
+| `DUMMER_DIRECT_FILE_LIST_UPLOAD` | `--direct-file-list-upload` | Upload a pending directory by passing DUM only that directory's direct file paths instead of the directory path. Boolean. |
+| `DUMMER_DIRECT_FILE_LIST_BATCH_SIZE` | `--direct-file-list-batch-size` | Maximum number of direct file paths to pass to one DUM command in direct file-list mode. Defaults to `500`. |
 
 ### Optional Efficiency Overrides
 
@@ -198,6 +200,13 @@ Use `--crawl-max-depth 1` to inventory root files and direct child directories w
 descending into grandchildren. Use `--crawl-max-depth 0` to inventory only root files.
 `--crawl-min-depth` skips shallower directories while still walking deeper ones until
 `--crawl-max-depth` is reached.
+
+Use `--direct-file-list-upload` when DUM should not receive a directory path at upload
+time. In that mode dummer lists only the direct files in each pending directory, passes
+those file paths to DUM, and does not generate child-directory exclude patterns. Large
+directories are split into multiple DUM commands according to
+`--direct-file-list-batch-size`; the directory is marked processed only after all batches
+validate successfully.
 
 ## Examples
 

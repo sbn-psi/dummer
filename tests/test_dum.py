@@ -7,7 +7,13 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 
-from dummer.dum import build_command, build_direct_file_only_exclude_patterns, execute_command, parse_ingress_report
+from dummer.dum import (
+    build_command,
+    build_direct_file_only_exclude_patterns,
+    direct_file_paths,
+    execute_command,
+    parse_ingress_report,
+)
 
 
 class DumCommandTests(unittest.TestCase):
@@ -60,6 +66,58 @@ class DumCommandTests(unittest.TestCase):
                 "trimmed/*/*",
             ],
         )
+
+    def test_build_command_accepts_multiple_ingress_files(self) -> None:
+        command = build_command(
+            dum_binary="/opt/pds-ingress-client",
+            log_level="warn",
+            bundle_prefix="/dsk8/catalina",
+            config_file="/home/dum/conf.default.ini",
+            name_param="sbn",
+            full_path=[
+                "/dsk8/catalina/gbo.ast.catalina.survey/collection/file1.dat",
+                "/dsk8/catalina/gbo.ast.catalina.survey/collection/file2.dat",
+            ],
+            num_threads=12,
+            report_path="/tmp/report.json",
+        )
+
+        self.assertEqual(
+            command,
+            [
+                "/opt/pds-ingress-client",
+                "--log-level",
+                "warn",
+                "--prefix",
+                "/dsk8/catalina/",
+                "-c",
+                "/home/dum/conf.default.ini",
+                "-n",
+                "sbn",
+                "/dsk8/catalina/gbo.ast.catalina.survey/collection/file1.dat",
+                "/dsk8/catalina/gbo.ast.catalina.survey/collection/file2.dat",
+                "--num-threads",
+                "12",
+                "--report-path",
+                "/tmp/report.json",
+            ],
+        )
+
+    def test_direct_file_paths_contains_only_direct_files(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle" / "dir"
+            child = base / "child"
+            child.mkdir(parents=True)
+            first = base / "a.txt"
+            second = base / "b.txt"
+            nested = child / "nested.txt"
+            first.write_text("alpha", encoding="utf-8")
+            second.write_text("beta", encoding="utf-8")
+            nested.write_text("nested", encoding="utf-8")
+
+            files = direct_file_paths(str(base))
+
+            self.assertEqual(files, [str(first), str(second)])
 
     def test_execute_command_captures_output_by_default(self) -> None:
         command = [

@@ -8,7 +8,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 from .console import log, write_raw
-from .dum import build_command, build_direct_file_only_exclude_patterns, execute_command, parse_ingress_report
+from .dum import (
+    build_command,
+    build_direct_file_only_exclude_patterns,
+    command_size_bytes,
+    command_size_limit_bytes,
+    direct_file_paths,
+    execute_command,
+    parse_ingress_report,
+)
 from .inventory import (
     crawl_inventory_to_state_file_with_options,
     parse_inventory_manifest_to_state_file,
@@ -56,6 +64,8 @@ class UploadOptions:
     max_dirs: int
     loop: bool
     interactive: bool = False
+    direct_file_list_upload: bool = False
+    direct_file_list_batch_size: int = 500
 
 
 @dataclass(frozen=True)
@@ -248,7 +258,98 @@ def build_upload_options_from_namespace(ns: Namespace) -> UploadOptions:
         max_dirs=ns.max_dirs,
         loop=ns.loop,
         interactive=ns.interactive,
+        direct_file_list_upload=ns.direct_file_list_upload,
+        direct_file_list_batch_size=ns.direct_file_list_batch_size,
     )
+
+
+def _available_report_path(report_dir: Path, report_name: str) -> Path:
+    report_path = report_dir / f"{report_name}.json"
+    suffix = 1
+    while report_path.exists():
+        report_path = report_dir / f"{report_name}_{suffix}.json"
+        suffix += 1
+    return report_path
+
+
+def _command_size_checked_file_batches(
+    *,
+    file_paths: list[str],
+    max_files_per_batch: int,
+    max_command_bytes: int,
+    dum_binary: str,
+    log_level: str,
+    bundle_prefix: str,
+    config_file: str,
+    name_param: str,
+    num_threads: int,
+    report_path: str,
+) -> tuple[list[list[str]], bool]:
+    batches: list[list[str]] = []
+    current: list[str] = []
+    current_size = 0
+    size_limited = False
+    base_command = build_command(
+        dum_binary=dum_binary,
+        log_level=log_level,
+        bundle_prefix=bundle_prefix,
+        config_file=config_file,
+        name_param=name_param,
+        full_path=[],
+        num_threads=num_threads,
+        report_path=report_path,
+    )
+    base_command_size = command_size_bytes(base_command)
+
+    for file_path in file_paths:
+        file_path_size = len(file_path.encode("utf-8")) + 1
+        candidate_size = current_size + file_path_size
+        candidate_too_large = base_command_size + candidate_size > max_command_bytes
+        if len(current) + 1 > max_files_per_batch or candidate_too_large:
+            if not current:
+                raise ValueError(
+                    "Direct file-list upload cannot fit a single file path within the command size limit: "
+                    f"{file_path}"
+                )
+            if candidate_too_large:
+                size_limited = True
+            batches.append(current)
+            current = [file_path]
+            current_size = file_path_size
+            if base_command_size + current_size > max_command_bytes:
+                raise ValueError(
+                    "Direct file-list upload cannot fit a single file path within the command size limit: "
+                    f"{file_path}"
+                )
+        else:
+            current.append(file_path)
+            current_size = candidate_size
+
+    if current:
+        batches.append(current)
+    return batches, size_limited
+
+
+def _truncated_direct_file_list_command(command: list[str], ingress_paths: list[str], *, keep: int = 3) -> str:
+    if len(ingress_paths) <= keep * 2:
+        return " ".join(shlex.quote(arg) for arg in command)
+
+    first_path = ingress_paths[0]
+    try:
+        start = command.index(first_path)
+    except ValueError:
+        return " ".join(shlex.quote(arg) for arg in command)
+
+    end = start + len(ingress_paths)
+    omitted = len(ingress_paths) - (keep * 2)
+    display_command = [
+        *command[:start],
+        *ingress_paths[:keep],
+        f"[... {omitted} file paths omitted ...]",
+        *ingress_paths[-keep:],
+        *command[end:],
+    ]
+    return " ".join(shlex.quote(arg) for arg in display_command)
 
 
 def upload_from_reconcile_result(
@@ -296,8 +397,31 @@ def upload_from_reconcile_result(
     if reconciled.drift:
         log(f"Reconcile drift found {len(reconciled.drift)} directories with processed_count > local_count.")
 
+    if options.direct_file_list_batch_size < 1:
+        raise ValueError("--direct-file-list-batch-size must be 1 or greater")
+
+    return _upload_pending_items(
+        reconciled,
+        processed_state,
+        options,
+        writer,
+        current_reconciliation_summary,
+        summary_anchor_component=summary_anchor_component,
+    )
+
+
+def _upload_pending_items(
+    reconciled: ReconcileResult,
+    processed_state: Path,
+    options: UploadOptions,
+    writer: PipelineReportWriter,
+    current_reconciliation_summary: list[dict[str, Any]],
+    *,
+    summary_anchor_component: int | None,
+) -> int:
     limit = len(reconciled.pending) if options.loop else max(1, options.max_dirs)
     partial_failures = 0
+    max_command_bytes = command_size_limit_bytes()
 
     for item in reconciled.pending[:limit]:
         ctx = writer.new_context()
@@ -310,95 +434,150 @@ def upload_from_reconcile_result(
         full_path = sanitize_path(str(Path(options.local_path) / item.rel_dir))
         dum_prefix = sanitize_path(options.prefix or str(Path(options.local_path).parent))
         report_name = report_safe_name(item.rel_dir)
-        report_path = options.report_dir / f"{report_name}.json"
-        suffix = 1
-        while report_path.exists():
-            report_path = options.report_dir / f"{report_name}_{suffix}.json"
-            suffix += 1
+        if options.direct_file_list_upload:
+            all_direct_files = direct_file_paths(full_path)
+            if not all_direct_files:
+                raise ValueError(f"No direct files found for pending directory: {item.rel_dir}")
+            if len(all_direct_files) != item.local_count:
+                raise ValueError(
+                    "Direct file count changed before upload for "
+                    f"{item.rel_dir}: state has {item.local_count}, filesystem has {len(all_direct_files)}"
+                )
+            probe_report_path = _available_report_path(options.report_dir, f"{report_name}_batch")
+            file_batches, size_limited = _command_size_checked_file_batches(
+                file_paths=all_direct_files,
+                max_files_per_batch=options.direct_file_list_batch_size,
+                max_command_bytes=max_command_bytes,
+                dum_binary=options.dum_binary,
+                log_level=options.log_level,
+                bundle_prefix=dum_prefix,
+                config_file=options.config,
+                name_param=options.name,
+                num_threads=options.threads,
+                report_path=str(probe_report_path),
+            )
+            upload_batches: list[tuple[list[str] | str, Path, int, list[str]]] = []
+            for index, file_batch in enumerate(file_batches, start=1):
+                batch_report_name = report_name if len(file_batches) == 1 else f"{report_name}_batch{index}"
+                upload_batches.append(
+                    (file_batch, _available_report_path(options.report_dir, batch_report_name), len(file_batch), [])
+                )
+            log(
+                "Direct file-list upload prepared for "
+                f"{item.rel_dir}: {len(all_direct_files)} files across {len(upload_batches)} command(s)."
+            )
+            if size_limited:
+                log(
+                    "Reduced direct file-list batch size to stay under runtime command size limit "
+                    f"({max_command_bytes} bytes)."
+                )
+        else:
+            report_path = _available_report_path(options.report_dir, report_name)
+            exclude_patterns = build_direct_file_only_exclude_patterns(
+                full_path=full_path,
+                bundle_prefix=dum_prefix,
+            )
+            upload_batches = [(full_path, report_path, item.local_count, exclude_patterns)]
 
-        ctx.pds_ingress_client_report_path = str(report_path)
-        exclude_patterns = build_direct_file_only_exclude_patterns(
-            full_path=full_path,
-            bundle_prefix=dum_prefix,
-        )
+        processed_in_this_directory = 0
+        executed_commands: list[str] = []
+        report_paths: list[str] = []
+        for batch_index, (ingress_paths, batch_report_path, expected_files, exclude_patterns) in enumerate(
+            upload_batches,
+            start=1,
+        ):
+            report_paths.append(str(batch_report_path))
+            command = build_command(
+                dum_binary=options.dum_binary,
+                log_level=options.log_level,
+                bundle_prefix=dum_prefix,
+                config_file=options.config,
+                name_param=options.name,
+                full_path=ingress_paths,
+                num_threads=options.threads,
+                report_path=str(batch_report_path),
+                exclude_patterns=exclude_patterns,
+            )
+            command_bytes = command_size_bytes(command)
+            if command_bytes > max_command_bytes:
+                raise ValueError(
+                    "DUM command is too large to execute: "
+                    f"{command_bytes} bytes exceeds runtime limit {max_command_bytes} bytes"
+                )
+            command_text = " ".join(shlex.quote(x) for x in command)
+            if options.direct_file_list_upload:
+                command_log_text = _truncated_direct_file_list_command(command, list(ingress_paths))
+            else:
+                command_log_text = command_text
+            ctx.command_executed = "\n".join(executed_commands)
+            ctx.pds_ingress_client_report_path = "\n".join(report_paths)
 
-        command = build_command(
-            dum_binary=options.dum_binary,
-            log_level=options.log_level,
-            bundle_prefix=dum_prefix,
-            config_file=options.config,
-            name_param=options.name,
-            full_path=full_path,
-            num_threads=options.threads,
-            report_path=str(report_path),
-            exclude_patterns=exclude_patterns,
-        )
-        ctx.command_executed = " ".join(shlex.quote(x) for x in command)
+            log("Executing command:")
+            log(command_log_text)
+            executed_commands.append(command_text)
+            ctx.command_executed = "\n".join(executed_commands)
+            exit_code, output = execute_command(command, interactive=options.interactive)
+            ctx.command_exit_code = exit_code
+            if options.interactive:
+                write_raw("\n")
 
-        log("Executing command:")
-        log(ctx.command_executed)
-        exit_code, output = execute_command(command, interactive=options.interactive)
-        ctx.command_exit_code = exit_code
-        if options.interactive:
-            write_raw("\n")
+            if exit_code != 0:
+                log(f"Error: Command failed with exit code {exit_code}")
+                if output:
+                    if options.interactive:
+                        log("Command output was streamed above.")
+                    else:
+                        log("Command output:")
+                        write_raw(output if output.endswith("\n") else f"{output}\n")
+                break
 
-        if exit_code == 0:
             log("Command finished successfully.")
             log("Validating upload success by parsing report...")
-            validation = parse_ingress_report(report_path, expected_total_files=item.local_count)
+            validation = parse_ingress_report(batch_report_path, expected_total_files=expected_files)
             if validation:
-                set_state_entry(processed_state, item.rel_dir, item.local_count)
-                _increment_completed_directory_in_summary(
-                    current_reconciliation_summary,
-                    item,
-                    summary_anchor_component=summary_anchor_component,
-                )
-                ctx.status = "processing_succeeded"
-                ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
-                log("Processing completed successfully.")
-                writer.write(ctx)
+                processed_in_this_directory += expected_files
                 continue
-
-            partial_processed_count = 0
             if not isinstance(validation, bool):
-                partial_processed_count = min(validation.processed_count, item.local_count)
-            previous_processed_count = item.processed_count or 0
-            if 0 < partial_processed_count < item.local_count and partial_processed_count > previous_processed_count:
-                set_state_entry(processed_state, item.rel_dir, partial_processed_count)
-                _increment_processed_files_in_summary(
-                    current_reconciliation_summary,
-                    item,
-                    partial_processed_count,
-                    summary_anchor_component=summary_anchor_component,
-                )
-                ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
-                partial_failures += 1
-                ctx.status = "partial_processed"
-                log(
-                    "Partial upload progress recorded: "
-                    f"processed={partial_processed_count}, local={item.local_count}. "
-                    "Directory remains pending for a future reconcile."
-                )
-                writer.write(ctx)
-                if options.loop:
-                    continue
-                return 1
+                processed_in_this_directory += min(validation.processed_count, expected_files)
+            break
 
-            log("Error: Upload validation failed. Directory will be retried on next run.")
-            ctx.status = "validation_failed"
-            log("Validation failed - will retry on next run.")
+        if processed_in_this_directory == item.local_count:
+            set_state_entry(processed_state, item.rel_dir, item.local_count)
+            _increment_completed_directory_in_summary(
+                current_reconciliation_summary,
+                item,
+                summary_anchor_component=summary_anchor_component,
+            )
+            ctx.status = "processing_succeeded"
+            ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
+            log("Processing completed successfully.")
             writer.write(ctx)
+            continue
+
+        previous_processed_count = item.processed_count or 0
+        if 0 < processed_in_this_directory < item.local_count and processed_in_this_directory > previous_processed_count:
+            set_state_entry(processed_state, item.rel_dir, processed_in_this_directory)
+            _increment_processed_files_in_summary(
+                current_reconciliation_summary,
+                item,
+                processed_in_this_directory,
+                summary_anchor_component=summary_anchor_component,
+            )
+            ctx.reconciliation_summary = deepcopy(current_reconciliation_summary)
+            partial_failures += 1
+            ctx.status = "partial_processed"
+            log(
+                "Partial upload progress recorded: "
+                f"processed={processed_in_this_directory}, local={item.local_count}. "
+                "Directory remains pending for a future reconcile."
+            )
+            writer.write(ctx)
+            if options.loop:
+                continue
             return 1
 
-        log(f"Error: Command failed with exit code {exit_code}")
-        if output:
-            if options.interactive:
-                log("Command output was streamed above.")
-            else:
-                log("Command output:")
-                write_raw(output if output.endswith("\n") else f"{output}\n")
-        log(f"Directory '{item.rel_dir}' will be retried on the next run.")
-        ctx.status = "processing_failed"
+        log("Error: Upload failed or validation failed. Directory will be retried on next run.")
+        ctx.status = "processing_failed" if ctx.command_exit_code else "validation_failed"
         log("Processing failed - will retry on next run.")
         writer.write(ctx)
         return 1
