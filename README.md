@@ -164,6 +164,9 @@ If a processed state file does not exist, Dummer treats processed state as empty
 
 Depth is counted below the data/bundle directory. Root files are depth `0`;
 direct child folders are depth `1`; grandchildren are depth `2`.
+Hidden files and directories are ignored during crawl and manifest inventory by
+default, as DUM does not upload those files. Use `--include-hidden` or `DUMMER_INCLUDE_HIDDEN=true`
+to override this behavior in Dummer.
 
 ### Upload And Run Behavior
 
@@ -225,7 +228,7 @@ Common options:
 | `--processed-s3-resume-cluster-depth N` | Path component depth used for S3 resume grouping. |
 | `--processed-s3-max-retries N` | Maximum public S3 list retries. |
 | `--processed-s3-retry-delay-seconds N` | Base public S3 retry delay. |
-| `--path-filter`, `--path-filter-depth`, `--crawl-min-depth`, `--crawl-max-depth` | Same behavior as the main command. |
+| `--path-filter`, `--path-filter-depth`, `--crawl-min-depth`, `--crawl-max-depth`, `--include-hidden` | Same behavior as the main command. |
 
 ### `dummer_reconcile.py`
 

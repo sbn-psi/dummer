@@ -47,6 +47,7 @@ class InventoryBuildSpec:
     path_filter_depth: int | None = None
     crawl_min_depth: int | None = None
     crawl_max_depth: int | None = None
+    include_hidden: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ def build_inventory_state(spec: InventoryBuildSpec, path_filter: str | None = No
             path_filter_depth=spec.path_filter_depth,
             crawl_min_depth=spec.crawl_min_depth,
             crawl_max_depth=spec.crawl_max_depth,
+            include_hidden=spec.include_hidden,
         )
 
     if spec.mode == "parse":
@@ -105,6 +107,7 @@ def build_inventory_state(spec: InventoryBuildSpec, path_filter: str | None = No
             spec.out_path,
             path_filter,
             spec.root,
+            include_hidden=spec.include_hidden,
         )
 
     if spec.mode == "s3":

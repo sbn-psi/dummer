@@ -63,6 +63,7 @@ class CliConfigTests(unittest.TestCase):
                         "DUMMER_PATH_FILTER_DEPTH=2",
                         "DUMMER_CRAWL_MIN_DEPTH=2",
                         "DUMMER_CRAWL_MAX_DEPTH=4",
+                        "DUMMER_INCLUDE_HIDDEN=true",
                         "DUMMER_SUMMARY_ANCHOR_COMPONENT=2",
                         "DUMMER_THREADS=9",
                         "DUMMER_PROCESSED_S3_RESUME_FROM_STATE=true",
@@ -79,6 +80,7 @@ class CliConfigTests(unittest.TestCase):
             self.assertEqual(ns.path_filter_depth, 2)
             self.assertEqual(ns.crawl_min_depth, 2)
             self.assertEqual(ns.crawl_max_depth, 4)
+            self.assertTrue(ns.include_hidden)
             self.assertEqual(ns.summary_anchor_component, 2)
             self.assertEqual(ns.threads, 9)
             self.assertTrue(ns.processed_s3_resume_from_state)

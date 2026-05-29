@@ -27,6 +27,7 @@ DEFAULTS: dict[str, object] = {
     "path_filter_depth": None,
     "crawl_min_depth": None,
     "crawl_max_depth": None,
+    "include_hidden": False,
     "summary_anchor_component": None,
     "bundle": None,
     "prefix": None,
@@ -68,6 +69,7 @@ ENV_VAR_NAMES: dict[str, str] = {
     "path_filter_depth": "DUMMER_PATH_FILTER_DEPTH",
     "crawl_min_depth": "DUMMER_CRAWL_MIN_DEPTH",
     "crawl_max_depth": "DUMMER_CRAWL_MAX_DEPTH",
+    "include_hidden": "DUMMER_INCLUDE_HIDDEN",
     "summary_anchor_component": "DUMMER_SUMMARY_ANCHOR_COMPONENT",
     "bundle": "DUMMER_BUNDLE",
     "prefix": "DUMMER_PREFIX",
@@ -115,6 +117,7 @@ def coerce_config_value(dest: str, raw: str) -> object:
         "processed_s3_resume_from_state",
         "interactive",
         "direct_file_list_upload",
+        "include_hidden",
         "loop",
     }:
         return parse_bool(raw)

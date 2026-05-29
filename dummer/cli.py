@@ -145,6 +145,7 @@ def _local_build_spec(ns: argparse.Namespace, local_state: Path) -> InventoryBui
         path_filter_depth=ns.path_filter_depth,
         crawl_min_depth=ns.crawl_min_depth,
         crawl_max_depth=ns.crawl_max_depth,
+        include_hidden=ns.include_hidden,
     )
 
 
@@ -173,6 +174,7 @@ def _processed_build_spec(ns: argparse.Namespace, processed_state: Path) -> Inve
         path_filter_depth=ns.path_filter_depth,
         crawl_min_depth=ns.crawl_min_depth,
         crawl_max_depth=ns.crawl_max_depth,
+        include_hidden=ns.include_hidden,
     )
 
 

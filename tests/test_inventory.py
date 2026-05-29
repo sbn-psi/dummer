@@ -30,6 +30,43 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(written, 2)
             self.assertEqual(read_state_file(out_path), {".": 2, "collection": 1})
 
+    def test_crawl_ignores_hidden_files_and_directories_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            hidden_child = base / ".hidden_collection"
+            child.mkdir(parents=True)
+            hidden_child.mkdir(parents=True)
+            (base / "root.dat").write_text("a", encoding="utf-8")
+            (base / ".root_hidden.dat").write_text("hidden", encoding="utf-8")
+            (child / "child.dat").write_text("b", encoding="utf-8")
+            (child / ".child_hidden.dat").write_text("hidden", encoding="utf-8")
+            (hidden_child / "hidden_child.dat").write_text("hidden", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(str(base), out_path)
+
+            self.assertEqual(written, 2)
+            self.assertEqual(read_state_file(out_path), {".": 1, "collection": 1})
+
+    def test_crawl_can_include_hidden_files_and_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "bundle"
+            child = base / "collection"
+            hidden_child = base / ".hidden_collection"
+            child.mkdir(parents=True)
+            hidden_child.mkdir(parents=True)
+            (base / "root.dat").write_text("a", encoding="utf-8")
+            (base / ".root_hidden.dat").write_text("hidden", encoding="utf-8")
+            (child / ".child_hidden.dat").write_text("hidden", encoding="utf-8")
+            (hidden_child / "hidden_child.dat").write_text("hidden", encoding="utf-8")
+
+            out_path = Path(tmp) / "state.txt"
+            written = crawl_inventory_to_state_file_with_options(str(base), out_path, include_hidden=True)
+
+            self.assertEqual(written, 3)
+            self.assertEqual(read_state_file(out_path), {".": 2, ".hidden_collection": 1, "collection": 1})
+
     def test_crawl_max_depth_zero_keeps_only_root_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "bundle"
@@ -81,6 +118,48 @@ class InventoryTests(unittest.TestCase):
 
             self.assertEqual(written, 2)
             self.assertEqual(read_state_file(out_path), {".": 2, "collection": 1})
+
+    def test_manifest_ignores_hidden_path_components_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "manifest.txt"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "bundle/root.dat",
+                        "bundle/.root_hidden.dat",
+                        "bundle/collection/.hidden.dat",
+                        "bundle/.hidden_collection/file.dat",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            out_path = Path(tmp) / "state.txt"
+            written = parse_inventory_manifest_to_state_file(str(manifest), out_path)
+
+            self.assertEqual(written, 1)
+            self.assertEqual(read_state_file(out_path), {".": 1})
+
+    def test_manifest_can_include_hidden_path_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            manifest = Path(tmp) / "manifest.txt"
+            manifest.write_text(
+                "\n".join(
+                    [
+                        "bundle/root.dat",
+                        "bundle/.root_hidden.dat",
+                        "bundle/collection/.hidden.dat",
+                        "bundle/.hidden_collection/file.dat",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            out_path = Path(tmp) / "state.txt"
+            written = parse_inventory_manifest_to_state_file(str(manifest), out_path, include_hidden=True)
+
+            self.assertEqual(written, 3)
+            self.assertEqual(read_state_file(out_path), {".": 2, ".hidden_collection": 1, "collection": 1})
 
     def test_crawl_counts_direct_files_for_non_leaf_directories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

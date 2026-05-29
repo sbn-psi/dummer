@@ -24,6 +24,12 @@ def add_path_filter_args(parser: argparse.ArgumentParser, defaults: Mapping[str,
         default=defaults.get("crawl_max_depth"),
         help="Optional maximum relative directory depth for filesystem crawl inventory",
     )
+    parser.add_argument(
+        "--include-hidden",
+        action="store_true",
+        default=defaults.get("include_hidden", False),
+        help="Include hidden files and directories in crawl and manifest inventory",
+    )
 
 
 def add_summary_args(parser: argparse.ArgumentParser, defaults: Mapping[str, object]) -> None:

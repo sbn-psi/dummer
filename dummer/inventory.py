@@ -43,6 +43,14 @@ def _should_prune_path_filter_sibling(path_parts: Iterable[str], path_filter: st
     return parts[path_filter_depth] != path_filter
 
 
+def _is_hidden_path_part(part: str) -> bool:
+    return part.startswith(".") and part not in {".", ".."}
+
+
+def _has_hidden_path_part(parts: Iterable[str]) -> bool:
+    return any(_is_hidden_path_part(part) for part in parts)
+
+
 def _manifest_root_parts(bundle_root: str | None) -> tuple[str, ...]:
     if not bundle_root:
         return ()
@@ -108,8 +116,14 @@ def _add_candidate_path_to_counts(
     raw_path: str,
     path_filter: str | None = None,
     bundle_root: str | None = None,
+    include_hidden: bool = False,
 ) -> bool:
-    rel_dir = _candidate_rel_dir_from_path(raw_path, path_filter=path_filter, bundle_root=bundle_root)
+    rel_dir = _candidate_rel_dir_from_path(
+        raw_path,
+        path_filter=path_filter,
+        bundle_root=bundle_root,
+        include_hidden=include_hidden,
+    )
     if not rel_dir:
         return False
     counts[rel_dir] = counts.get(rel_dir, 0) + 1
@@ -121,8 +135,14 @@ def _increment_writer_from_candidate_path(
     raw_path: str,
     path_filter: str | None = None,
     bundle_root: str | None = None,
+    include_hidden: bool = False,
 ) -> bool:
-    rel_dir = _candidate_rel_dir_from_path(raw_path, path_filter=path_filter, bundle_root=bundle_root)
+    rel_dir = _candidate_rel_dir_from_path(
+        raw_path,
+        path_filter=path_filter,
+        bundle_root=bundle_root,
+        include_hidden=include_hidden,
+    )
     if not rel_dir:
         return False
     writer.increment(rel_dir)
@@ -133,10 +153,15 @@ def _candidate_rel_dir_from_path(
     raw_path: str,
     path_filter: str | None = None,
     bundle_root: str | None = None,
+    include_hidden: bool = False,
 ) -> str | None:
     candidate = raw_path.strip()
     if not candidate or candidate.endswith("/"):
         return None
+    if not include_hidden:
+        candidate_parts = tuple(p for p in PurePosixPath(candidate).parts if p and p != "/")
+        if _has_hidden_path_part(candidate_parts):
+            return None
 
     rel_dir = _relative_dir_from_manifest_path(candidate, bundle_root)
     if rel_dir is None:
@@ -704,6 +729,7 @@ def crawl_inventory_to_state_file_with_options(
     path_filter_depth: int | None = None,
     crawl_min_depth: int | None = None,
     crawl_max_depth: int | None = None,
+    include_hidden: bool = False,
 ) -> int:
     """
     Stream direct-file directory inventory directly to disk.
@@ -732,6 +758,9 @@ def crawl_inventory_to_state_file_with_options(
 
     for root, dirs, files in os.walk(base, topdown=True):
         root_path = Path(root)
+        if not include_hidden:
+            dirs[:] = [name for name in dirs if not _is_hidden_path_part(name)]
+            files = [name for name in files if not _is_hidden_path_part(name)]
         scanned += 1
         if root_path == base:
             rel_parts: tuple[str, ...] = ()
@@ -797,6 +826,7 @@ def parse_inventory_manifest_to_state_file(
     out_path: Path,
     path_filter: str | None = None,
     bundle_root: str | None = None,
+    include_hidden: bool = False,
 ) -> int:
     """
     Build directory inventory from a newline-delimited manifest of file paths.
@@ -817,7 +847,13 @@ def parse_inventory_manifest_to_state_file(
     with opener(source, "rt", encoding="utf-8") as fh:
         for line in fh:
             lines_read += 1
-            if _increment_writer_from_candidate_path(writer, line, path_filter=path_filter, bundle_root=bundle_root):
+            if _increment_writer_from_candidate_path(
+                writer,
+                line,
+                path_filter=path_filter,
+                bundle_root=bundle_root,
+                include_hidden=include_hidden,
+            ):
                 matched += 1
             writer.maybe_flush()
             heartbeat.notify_activity()
