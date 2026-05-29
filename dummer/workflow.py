@@ -63,6 +63,7 @@ class UploadOptions:
     log_level: str
     max_dirs: int
     loop: bool
+    dum_manifest_store: Path | None = None
     interactive: bool = False
     direct_file_list_upload: bool = False
     direct_file_list_batch_size: int = 500
@@ -254,6 +255,7 @@ def build_upload_options_from_namespace(ns: Namespace) -> UploadOptions:
         threads=ns.threads,
         report_dir=Path(ns.report_dir) if ns.report_dir else None,
         pipeline_report_dir=Path(ns.pipeline_report_dir) if ns.pipeline_report_dir else None,
+        dum_manifest_store=Path(ns.dum_manifest_store) if getattr(ns, "dum_manifest_store", None) else None,
         log_level=ns.log_level,
         max_dirs=ns.max_dirs,
         loop=ns.loop,
@@ -352,6 +354,16 @@ def _truncated_direct_file_list_command(command: list[str], ingress_paths: list[
     return " ".join(shlex.quote(arg) for arg in display_command)
 
 
+def _manifest_store_namespace(local_root: str) -> str:
+    absolute_root = str(Path(local_root).expanduser().resolve(strict=False))
+    return report_safe_name(sanitize_path(absolute_root).lstrip("/"))
+
+
+def dum_manifest_path_for_directory(manifest_store: Path, local_root: str, rel_dir: str) -> Path:
+    namespace = _manifest_store_namespace(local_root)
+    return manifest_store / namespace / PurePosixPath(rel_dir).as_posix() / "manifest.json"
+
+
 def upload_from_reconcile_result(
     reconciled: ReconcileResult,
     processed_state: Path,
@@ -391,14 +403,18 @@ def upload_from_reconcile_result(
     if missing:
         raise ValueError("Missing required upload configuration: " + ", ".join(missing))
 
+    if options.direct_file_list_batch_size < 1:
+        raise ValueError("--direct-file-list-batch-size must be 1 or greater")
+    if options.dum_manifest_store and options.direct_file_list_upload:
+        raise ValueError("--dum-manifest-store is incompatible with --direct-file-list-upload")
+
     ensure_dir(options.report_dir, "report directory")
     ensure_dir(options.pipeline_report_dir, "pipeline report directory")
+    if options.dum_manifest_store:
+        ensure_dir(options.dum_manifest_store, "DUM manifest store directory")
     writer = PipelineReportWriter(options.pipeline_report_dir, script_name)
     if reconciled.drift:
         log(f"Reconcile drift found {len(reconciled.drift)} directories with processed_count > local_count.")
-
-    if options.direct_file_list_batch_size < 1:
-        raise ValueError("--direct-file-list-batch-size must be 1 or greater")
 
     return _upload_pending_items(
         reconciled,
@@ -434,6 +450,17 @@ def _upload_pending_items(
         full_path = sanitize_path(str(Path(options.local_path) / item.rel_dir))
         dum_prefix = sanitize_path(options.prefix or str(Path(options.local_path).parent))
         report_name = report_safe_name(item.rel_dir)
+        manifest_path = (
+            dum_manifest_path_for_directory(
+                options.dum_manifest_store,
+                options.local_path,
+                item.rel_dir,
+            )
+            if options.dum_manifest_store
+            else None
+        )
+        if manifest_path:
+            ensure_dir(manifest_path.parent, "DUM manifest directory")
         if options.direct_file_list_upload:
             all_direct_files = direct_file_paths(full_path)
             if not all_direct_files:
@@ -497,6 +524,7 @@ def _upload_pending_items(
                 num_threads=options.threads,
                 report_path=str(batch_report_path),
                 exclude_patterns=exclude_patterns,
+                manifest_path=str(manifest_path) if manifest_path else None,
             )
             command_bytes = command_size_bytes(command)
             if command_bytes > max_command_bytes:

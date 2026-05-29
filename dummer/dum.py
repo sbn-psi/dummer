@@ -133,6 +133,7 @@ def build_command(
     num_threads: int,
     report_path: str,
     exclude_patterns: Iterable[str] = (),
+    manifest_path: str | None = None,
 ) -> list[str]:
     ingress_paths = [full_path] if isinstance(full_path, str) else list(full_path)
     command = [
@@ -151,6 +152,8 @@ def build_command(
         "--report-path",
         report_path,
     ]
+    if manifest_path:
+        command.extend(["--manifest-path", manifest_path])
     for pattern in exclude_patterns:
         command.extend(["--exclude", pattern])
     return command

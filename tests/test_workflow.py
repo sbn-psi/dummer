@@ -15,6 +15,7 @@ from dummer.workflow import (
     UploadOptions,
     _command_size_checked_file_batches,
     _truncated_direct_file_list_command,
+    dum_manifest_path_for_directory,
     upload_from_reconcile_result,
 )
 
@@ -205,6 +206,97 @@ class WorkflowUploadTests(unittest.TestCase):
             self.assertNotIn("--exclude", commands[0] + commands[1])
             self.assertEqual([call.kwargs["expected_total_files"] for call in parse_report.mock_calls], [2, 1])
             self.assertEqual(read_state_file(processed_state), {"a/2026/one": 3})
+
+    def test_dum_manifest_store_passes_deterministic_manifest_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            local_root = base / "bundle"
+            processed_state = base / "processed.txt"
+            report_dir = base / "reports"
+            pipeline_dir = base / "pipeline"
+            manifest_store = base / "manifests"
+            report_dir.mkdir()
+            pipeline_dir.mkdir()
+
+            options = UploadOptions(
+                local_path=str(local_root),
+                bundle="bundle",
+                prefix=str(base),
+                config="/conf.ini",
+                name="name",
+                dum_binary="/bin/echo",
+                threads=1,
+                report_dir=report_dir,
+                pipeline_report_dir=pipeline_dir,
+                log_level="warn",
+                max_dirs=1,
+                loop=False,
+                dum_manifest_store=manifest_store,
+            )
+            reconciled = ReconcileResult(
+                pending=[ReconcileItem("a/2026/one", 3, None)],
+                drift=[],
+            )
+
+            commands: list[list[str]] = []
+
+            def _capture_command(command, **_kwargs):
+                commands.append(command)
+                return (0, "")
+
+            with patch("dummer.workflow.execute_command", side_effect=_capture_command):
+                with patch("dummer.workflow.parse_ingress_report", return_value=True):
+                    exit_code = upload_from_reconcile_result(reconciled, processed_state, options)
+
+            expected_manifest = dum_manifest_path_for_directory(
+                manifest_store,
+                str(local_root),
+                "a/2026/one",
+            )
+            self.assertEqual(exit_code, 0)
+            self.assertTrue(manifest_store.is_dir())
+            self.assertEqual(len(commands), 1)
+            self.assertIn("--manifest-path", commands[0])
+            self.assertEqual(commands[0][commands[0].index("--manifest-path") + 1], str(expected_manifest))
+            self.assertEqual(expected_manifest.parent, manifest_store / expected_manifest.parts[-5] / "a" / "2026" / "one")
+            self.assertIn("bundle", expected_manifest.parts[-5])
+            self.assertNotIn("-name", expected_manifest.parts[-5])
+            self.assertEqual(expected_manifest.name, "manifest.json")
+            self.assertEqual(read_state_file(processed_state), {"a/2026/one": 3})
+
+    def test_dum_manifest_store_is_incompatible_with_direct_file_list_upload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            processed_state = base / "processed.txt"
+            report_dir = base / "reports"
+            pipeline_dir = base / "pipeline"
+            manifest_store = base / "manifests"
+            report_dir.mkdir()
+            pipeline_dir.mkdir()
+
+            options = UploadOptions(
+                local_path="/data/bundle",
+                bundle="bundle",
+                prefix="/data",
+                config="/conf.ini",
+                name="name",
+                dum_binary="/bin/echo",
+                threads=1,
+                report_dir=report_dir,
+                pipeline_report_dir=pipeline_dir,
+                log_level="warn",
+                max_dirs=1,
+                loop=False,
+                dum_manifest_store=manifest_store,
+                direct_file_list_upload=True,
+            )
+            reconciled = ReconcileResult(
+                pending=[ReconcileItem("a/2026/one", 3, None)],
+                drift=[],
+            )
+
+            with self.assertRaisesRegex(ValueError, "incompatible"):
+                upload_from_reconcile_result(reconciled, processed_state, options)
 
     def test_direct_file_list_batches_respect_runtime_command_size_limit(self) -> None:
         file_paths = [

@@ -44,6 +44,11 @@ def add_upload_args(parser: argparse.ArgumentParser, defaults: Mapping[str, obje
     parser.add_argument("--threads", type=int, default=defaults.get("threads"))
     parser.add_argument("--report-dir", default=defaults.get("report_dir"))
     parser.add_argument("--pipeline-report-dir", default=defaults.get("pipeline_report_dir"))
+    parser.add_argument(
+        "--dum-manifest-store",
+        default=defaults.get("dum_manifest_store"),
+        help="Directory for per-directory DUM checksum manifests used with --manifest-path",
+    )
     parser.add_argument("--script-dir", default=defaults.get("script_dir"))
     parser.add_argument("--log-level", default=defaults.get("log_level"))
     parser.add_argument(

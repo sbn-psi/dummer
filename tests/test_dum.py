@@ -103,6 +103,22 @@ class DumCommandTests(unittest.TestCase):
             ],
         )
 
+    def test_build_command_appends_manifest_path(self) -> None:
+        command = build_command(
+            dum_binary="/opt/pds-ingress-client",
+            log_level="warn",
+            bundle_prefix="/dsk8/catalina",
+            config_file="/home/dum/conf.default.ini",
+            name_param="sbn",
+            full_path="/dsk8/catalina/gbo.ast.catalina.survey/collection/2025/parent",
+            num_threads=12,
+            report_path="/tmp/report.json",
+            manifest_path="/var/lib/dummer/manifests/parent-abc123.json",
+        )
+
+        self.assertIn("--manifest-path", command)
+        self.assertEqual(command[command.index("--manifest-path") + 1], "/var/lib/dummer/manifests/parent-abc123.json")
+
     def test_direct_file_paths_contains_only_direct_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "bundle" / "dir"

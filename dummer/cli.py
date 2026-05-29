@@ -7,6 +7,7 @@ from pathlib import Path
 from .args import add_path_filter_args, add_summary_args, add_upload_args
 from .console import TimestampedArgumentParser, log
 from .runtime_config import DEFAULTS, load_config_defaults, log_effective_configuration
+from .wizard import run_wizard
 from .workflow import (
     InventoryBuildSpec,
     build_inventory_state,
@@ -176,7 +177,11 @@ def _processed_build_spec(ns: argparse.Namespace, processed_state: Path) -> Inve
 
 
 def main(argv: list[str] | None = None) -> int:
-    ns = _parse_args(sys.argv[1:] if argv is None else argv)
+    args = sys.argv[1:] if argv is None else argv
+    if args and args[0] in {"setup", "wizard"}:
+        return run_wizard(args[1:])
+
+    ns = _parse_args(args)
     log_effective_configuration(ns)
 
     try:

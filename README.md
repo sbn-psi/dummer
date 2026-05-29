@@ -1,311 +1,316 @@
-# dummer
+# Dummer
 
-dummer is an operations wrapper around DUM for reliable, interruptible, state-aware
-uploads. It answers the practical question admins face during large uploads: "Given the
-files I have locally and what appears to have already been processed, where does DUM
-still need to run?"
+Dummer is a small wrapper around [DUM](https://github.com/NASA-PDS/data-upload-manager) for running large uploads from a local data/bundle directory.
 
-The tool builds or reuses a cheap local inventory, compares it against processed state,
-runs DUM only for directories that are not present or incomplete in processed state, and
-records each successful upload back into state. That makes repeated runs efficient for
-file sets that are unchanged or only growing: dummer can count files and reconcile state
-instead of forcing DUM to checksum and process the entire filesystem tree again.
+It is aimed at answering one operational question:
 
-The result is not just reconciliation, but a safer operating loop. Long uploads can be
-interrupted and resumed, completed work is skipped, failures retry only the affected
-directories, and every run leaves behind state and reports that can be inspected for
-verification.
+> Given the files here, and whatever has already been processed, what still needs
+> to be uploaded?
 
-dummer keeps the upload workflow inspectable. Inventory state is a simple tab-separated
-file, reconciliation drift is reported, DUM JSON reports are preserved, and pipeline run
-reports capture what happened for each attempted directory. Long-running crawls, S3
-inventory builds, and non-interactive uploads emit timestamped progress messages so quiet
-runs are easier to monitor.
+DUM by itself can do a full reconciliation for a large set of organized files, but it requires a full crawl and checksum of every file, and verification with their backend in order to accomplish this. For a large accumulating data set, or on a system that might experience interruptions to DUM runs, this can drastically extend the amount of time it takes to upload and verify a large set of files. Dummer adds statefulness and more intelligent discovery and reconciliation so that it can reliably ensure that a set of files has been uploaded, and can be used in a delivery pipeline to build in resilience and additional reporting.
 
-Both the local side and the processed side use the same state-file format:
+Dummer keeps track of its own state, and breaks large runs into independently verified chunks by directory. It can build or reuse local file counts, compare them with processed state, run DUM for pending folders, and record successful work for the next run.
 
-`relative/directory/path\t<number_of_files>`
+## Start Here
 
-Local inventory can be crawled from the real file root, parsed from a manifest, or loaded
-from a prebuilt state file. Processed state can come from an existing state file, another
-manifest, a filesystem crawl, or an anonymous listing of a public AWS S3 bucket.
+For a new setup, run the wizard:
+
+```bash
+dummer setup
+```
+
+From a source checkout:
+
+```bash
+./dummer_setup.py
+```
+
+The wizard asks about your data and upload environment, then writes the answers
+to a `.env` file. Re-run it later to review or change the saved setup. If you
+need more detail while answering, type `help` at any question.
+
+After setup, run:
+
+```bash
+dummer
+```
+
+To override one saved setting for a single run, pass the matching flag:
+
+```bash
+dummer --max-dirs 5
+```
+
+`dummer wizard` is an alias for `dummer setup`. Installed packages also provide
+`dummer-setup`.
+
+## What You Need To Know
+
+Dummer works with two inventories:
+
+- **Local inventory**: what files exist in your data/bundle directory.
+- **Processed inventory**: what files or folders have already reached the
+  destination.
+
+Each inventory is represented as a simple state file:
+
+```text
+relative/directory/path<TAB>number_of_direct_files
+```
+
+For example:
+
+```text
+collection/703/2026/26Apr30	42
+```
+
+The normal run flow is:
+
+1. Build or reuse local inventory.
+2. Build or reuse processed inventory.
+3. Compare the two inventories.
+4. Upload pending folders.
+5. Update processed state after successful uploads.
+
+The setup wizard is the easiest way to choose the right inventory sources. You
+can use a filesystem crawl, an existing file list, an existing state file, a
+processed filesystem mirror, or a public S3 bucket depending on what your
+environment already has.
 
 ## Configuration
 
-The job dummer is built around is:
+`dummer` and `dummer_upload.py` resolve settings in this order:
 
-1. Inventory local files under a filesystem root.
-2. Reconcile that inventory with what has already been processed.
-3. Upload the missing directories.
-4. Record successful uploads back into processed state.
+1. Command-line flags.
+2. Environment variables such as `DUMMER_LOCAL_PATH`.
+3. A `.env` file found through `--script-dir`, the current directory, or the
+   default script directory.
+4. Built-in defaults.
 
-The most important setting is therefore the local file root:
+`dummer_inventory.py` and `dummer_reconcile.py` are explicit utility scripts.
+They do not use the full `.env` configuration surface; pass their options
+directly.
+
+Boolean environment values accept `1/0`, `true/false`, `yes/no`, or `on/off`.
+
+## Main Command Reference
 
 ```bash
---local-path /dsk8/catalina/gbo.ast.catalina.survey
+dummer [options]
 ```
 
-or:
+From a source checkout:
 
 ```bash
-DUMMER_LOCAL_PATH=/dsk8/catalina/gbo.ast.catalina.survey
+./dummer.py [options]
 ```
 
-If you do not provide a prebuilt local inventory, dummer crawls `--local-path`. If you
-already did inventory work ahead of time, pass `--local-state` or `--local-manifest` to
-skip that crawl. Uploads still use `--local-path` as the root for the actual files.
+### Required Upload Settings
 
-`dummer.py` resolves settings in this order:
+These settings are required when there is upload work to do.
 
-1. Explicit CLI arguments
-2. Environment variables such as `DUMMER_LOCAL_PATH` and `DUMMER_REPORT_DIR`
-3. A `.env` file in the current directory or `--script-dir`
-4. Built-in defaults for non-environment-specific settings only
-
-Environment-specific values like the local file root, DUM config path, and report
-directories are not baked into the code. The DUM executable defaults to
-`/usr/local/bin/pds-ingress-client`, and can be changed with `--dum-binary` or
-`DUMMER_DUM_BINARY`. Copy `.env.example` to `.env` and adjust it for the target
-environment, or set the same `DUMMER_*` variables in the shell.
-
-Not every script reads environment defaults today. `dummer.py` and `dummer_upload.py`
-resolve settings from CLI, environment, `.env`, then built-in defaults. `dummer_inventory.py`
-and `dummer_reconcile.py` are explicit-flag utilities, so pass their arguments on the
-command line unless noted otherwise.
-
-### Primary Settings
-
-| Environment variable | CLI flag | Meaning |
+| Environment variable | Flag | Meaning |
 | --- | --- | --- |
-| `DUMMER_LOCAL_PATH` | `--local-path` | Root directory containing the local files dummer may inventory and upload. This is the primary path admins usually set. |
-| `DUMMER_PROCESSED_STATE` | `--processed-state` | Reuse an existing processed dir/count state file. Exclusive with processed manifest/crawl/S3 sources in `dummer.py`. |
-| `DUMMER_PROCESSED_S3_BUCKET` | `--processed-s3-bucket` | Public S3 bucket to inspect for processed state. |
+| `DUMMER_LOCAL_PATH` | `--local-path` | Data/bundle directory containing the local files to upload. |
+| `DUMMER_CONFIG` | `--config` | DUM configuration file passed with `-c`. |
+| `DUMMER_NAME` | `--name` | DUM node/name value passed with `-n`. |
+| `DUMMER_DUM_BINARY` | `--dum-binary` | DUM executable. Defaults to `/usr/local/bin/pds-ingress-client`. |
+| `DUMMER_REPORT_DIR` | `--report-dir` | Directory for DUM JSON reports. |
+| `DUMMER_PIPELINE_REPORT_DIR` | `--pipeline-report-dir` | Directory for Dummer run reports. |
+
+### Local Inventory
+
+If neither `--local-state` nor `--local-manifest` is set, Dummer crawls
+`--local-path`.
+
+| Environment variable | Flag | Meaning |
+| --- | --- | --- |
+| `DUMMER_LOCAL_PATH` | `--local-path` | Data/bundle directory. Also used for upload paths. |
+| `DUMMER_LOCAL_STATE` | `--local-state` | Existing local state file to reuse. |
+| `DUMMER_LOCAL_MANIFEST` | `--local-manifest`, `--inventory-manifest` | Plain-text or `.gz` file list to parse as local inventory. |
+| `DUMMER_LOCAL_ROOT` | `--local-root`, `--inventory-manifest-root` | Prefix to strip from local manifest paths before comparison. |
+
+### Processed Inventory
+
+Choose exactly one processed source.
+
+| Environment variable | Flag | Meaning |
+| --- | --- | --- |
+| `DUMMER_PROCESSED_STATE` | `--processed-state` | Existing processed state file. Successful uploads are recorded here. |
+| `DUMMER_PROCESSED_MANIFEST` | `--processed-manifest` | Plain-text or `.gz` file list to parse as processed inventory. |
+| `DUMMER_PROCESSED_CRAWL` | `--processed-crawl` | Filesystem directory to crawl as processed inventory. |
+| `DUMMER_PROCESSED_ROOT` | `--processed-root` | Prefix to strip from processed paths or S3 keys before comparison. |
+| `DUMMER_PROCESSED_S3_BUCKET` | `--processed-s3-bucket` | Public S3 bucket to list for processed inventory. Requires anonymous `ListBucket` access. |
 | `DUMMER_PROCESSED_S3_PREFIX` | `--processed-s3-prefix` | S3 key prefix to list. |
-| `DUMMER_PATH_FILTER` | `--path-filter` | Track and upload only directories whose relative path contains this exact component. |
-| `DUMMER_CONFIG` | `--config` | DUM config file passed with `-c`. |
-| `DUMMER_NAME` | `--name` | DUM Node name parameter passed with `-n`. |
-| `DUMMER_DUM_BINARY` | `--dum-binary` | DUM executable path. Defaults to `/usr/local/bin/pds-ingress-client`. |
-| `DUMMER_THREADS` | `--threads` | DUM upload thread count. |
-| `DUMMER_REPORT_DIR` | `--report-dir` | Directory for DUM JSON reports. Required when upload work exists. |
-| `DUMMER_PIPELINE_REPORT_DIR` | `--pipeline-report-dir` | Directory for dummer pipeline run reports. Required when upload work exists. |
-| `DUMMER_SCRIPT_DIR` | `--script-dir` | Base directory for default state file paths and `.env` discovery. |
-| `DUMMER_MAX_DIRS` | `--max-dirs` | Number of pending directories to upload in a non-loop run. |
-| `DUMMER_LOOP` | `--loop` | Continue uploading until failure or exhaustion. Boolean. |
-| `DUMMER_DIRECT_FILE_LIST_UPLOAD` | `--direct-file-list-upload` | Upload a pending directory by passing DUM only that directory's direct file paths instead of the directory path. Boolean. |
-| `DUMMER_DIRECT_FILE_LIST_BATCH_SIZE` | `--direct-file-list-batch-size` | Maximum number of direct file paths to pass to one DUM command in direct file-list mode. Defaults to `500`. |
+| `DUMMER_PROCESSED_S3_REGION` | `--processed-s3-region` | Optional S3 region. |
+| `DUMMER_PROCESSED_S3_KNOWN_DIRS_FILE` | `--processed-s3-known-dirs-file` | Existing directory list to use for exact-prefix S3 counts. |
+| `DUMMER_PROCESSED_S3_KNOWN_DIRS_WORKERS` | `--processed-s3-known-dirs-workers` | Concurrent S3 exact-prefix checks. Defaults to `10`. |
+| `DUMMER_PROCESSED_S3_RESUME_FROM_STATE` | `--processed-s3-resume-from-state` | Resume S3 inventory from existing processed state. |
+| `DUMMER_PROCESSED_S3_RESUME_CLUSTER_DEPTH` | `--processed-s3-resume-cluster-depth` | Path component depth used for S3 resume grouping. Defaults to `2`. |
+| `DUMMER_PROCESSED_S3_MAX_RETRIES` | `--processed-s3-max-retries` | Maximum retries for public S3 list requests. Defaults to `10`. |
+| `DUMMER_PROCESSED_S3_RETRY_DELAY_SECONDS` | `--processed-s3-retry-delay-seconds` | Base retry delay for public S3 list requests. Defaults to `2.0`. |
 
-### Optional Efficiency Overrides
+If a processed state file does not exist, Dummer treats processed state as empty.
 
-These options are for skipping work that has already been done, or for tuning large
-inventory runs. They are not the normal starting point.
+### Path Filtering And Crawl Depth
 
-| Environment variable | CLI flag | Meaning |
+| Environment variable | Flag | Meaning |
 | --- | --- | --- |
-| `DUMMER_LOCAL_STATE` | `--local-state` | Reuse an existing local dir/count state file instead of crawling or parsing local inventory. |
-| `DUMMER_LOCAL_MANIFEST` | `--local-manifest` | Build local inventory from a plain-text or `.gz` file manifest instead of crawling `--local-path`. |
-| `DUMMER_LOCAL_ROOT` | `--local-root` | Leading manifest path prefix to strip before counting local parent directories. |
-| `DUMMER_PROCESSED_MANIFEST` | `--processed-manifest` | Build processed state from a manifest instead of using processed state/S3. |
-| `DUMMER_PROCESSED_CRAWL` | `--processed-crawl` | Crawl a filesystem path to build processed inventory. |
-| `DUMMER_PROCESSED_ROOT` | `--processed-root` | Leading processed manifest or S3 key prefix to strip before counting directories. |
-| `DUMMER_PROCESSED_S3_REGION` | `--processed-s3-region` | Optional S3 bucket region. |
-| `DUMMER_PROCESSED_S3_KNOWN_DIRS_FILE` | `--processed-s3-known-dirs-file` | Known directory list for exact-prefix S3 counting. |
-| `DUMMER_PROCESSED_S3_KNOWN_DIRS_WORKERS` | `--processed-s3-known-dirs-workers` | Worker count for known-directory S3 counting. |
-| `DUMMER_PROCESSED_S3_RESUME_FROM_STATE` | `--processed-s3-resume-from-state` | Resume S3 inventory from an existing processed state file. Boolean. |
-| `DUMMER_PROCESSED_S3_RESUME_CLUSTER_DEPTH` | `--processed-s3-resume-cluster-depth` | Path component depth used as the S3 resume cluster boundary. |
-| `DUMMER_PROCESSED_S3_MAX_RETRIES` | `--processed-s3-max-retries` | Max retries for public S3 list requests. |
-| `DUMMER_PROCESSED_S3_RETRY_DELAY_SECONDS` | `--processed-s3-retry-delay-seconds` | Base retry delay for public S3 list requests. |
-| `DUMMER_PATH_FILTER_DEPTH` | `--path-filter-depth` | Optional crawl-only pruning hint: depth where the path filter is expected. |
-| `DUMMER_CRAWL_MIN_DEPTH` | `--crawl-min-depth` | Optional minimum relative directory depth for filesystem crawl inventory. |
-| `DUMMER_CRAWL_MAX_DEPTH` | `--crawl-max-depth` | Optional maximum relative directory depth for filesystem crawl inventory. |
-| `DUMMER_SUMMARY_ANCHOR_COMPONENT` | `--summary-anchor-component` | Path component index used as the reconciliation summary anchor. |
-| `DUMMER_PREFIX` | `--prefix` | Override the DUM `--prefix` value. If omitted, dummer uses the parent of `--local-path`. |
-| `DUMMER_BUNDLE` | `--bundle` | Optional label retained for compatibility with existing reports/config; upload paths are rooted at `--local-path`. |
-| `DUMMER_LOG_LEVEL` | `--log-level` | DUM log level. |
-| `DUMMER_INTERACTIVE` | `--interactive` | Stream DUM output through a pseudo-terminal. Boolean. |
+| `DUMMER_PATH_FILTER` | `--path-filter` | Keep only directories whose relative path contains this exact component. |
+| `DUMMER_PATH_FILTER_DEPTH` | `--path-filter-depth` | Optional zero-based component position for faster crawl pruning. |
+| `DUMMER_CRAWL_MIN_DEPTH` | `--crawl-min-depth` | Minimum relative directory depth to include during filesystem crawl. |
+| `DUMMER_CRAWL_MAX_DEPTH` | `--crawl-max-depth` | Maximum relative directory depth to include during filesystem crawl. |
+| `DUMMER_SUMMARY_ANCHOR_COMPONENT` | `--summary-anchor-component` | Zero-based path component used to group reconciliation summaries. |
 
-Booleans accept `1/0`, `true/false`, `yes/no`, or `on/off`.
+Depth is counted below the data/bundle directory. Root files are depth `0`;
+direct child folders are depth `1`; grandchildren are depth `2`.
 
-## Scripts
+### Upload And Run Behavior
 
-- `./dummer.py`: orchestrate the full flow. Build local state, build processed state when needed, reconcile, then upload pending directories.
-- `./dummer_inventory.py`: build local state, processed state, or both in one run.
-- `./dummer_reconcile.py`: compare two state files and print the mismatches.
-- `./dummer_upload.py`: upload pending directories based on a local-state file and a processed-state file.
+| Environment variable | Flag | Meaning |
+| --- | --- | --- |
+| `DUMMER_BUNDLE` | `--bundle` | Short dataset label retained for compatibility with existing reports/config. |
+| `DUMMER_PREFIX` | `--prefix` | Prefix passed to DUM. If omitted, Dummer uses the parent of `--local-path`. |
+| `DUMMER_CONFIG` | `--config` | DUM configuration file. |
+| `DUMMER_NAME` | `--name` | DUM node/name value. |
+| `DUMMER_DUM_BINARY` | `--dum-binary` | DUM executable path. |
+| `DUMMER_THREADS` | `--threads` | DUM upload thread count. Defaults to `12`. |
+| `DUMMER_REPORT_DIR` | `--report-dir` | DUM report directory. |
+| `DUMMER_PIPELINE_REPORT_DIR` | `--pipeline-report-dir` | Dummer run report directory. |
+| `DUMMER_DUM_MANIFEST_STORE` | `--dum-manifest-store` | Directory for reusable per-folder DUM checksum manifests. Incompatible with direct file-list upload. |
+| `DUMMER_SCRIPT_DIR` | `--script-dir` | Base directory for default state paths and `.env` discovery. Defaults to `.`. |
+| `DUMMER_LOG_LEVEL` | `--log-level` | DUM log level. Defaults to `warn`. |
+| `DUMMER_INTERACTIVE` | `--interactive` | Stream DUM output through a pseudo-terminal. |
+| `DUMMER_DIRECT_FILE_LIST_UPLOAD` | `--direct-file-list-upload` | Pass direct file paths to DUM instead of a folder path. |
+| `DUMMER_DIRECT_FILE_LIST_BATCH_SIZE` | `--direct-file-list-batch-size` | Maximum file paths per DUM command in direct file-list mode. Defaults to `500`. |
+| `DUMMER_MAX_DIRS` | `--max-dirs` | Pending folders to process in a non-loop run. Defaults to `1`. |
+| `DUMMER_LOOP` | `-L`, `--loop` | Continue processing pending folders until none remain or a failure occurs. |
 
-## Default Flow
+Use `--dum-manifest-store` only when files in already-seen folders are stable
+enough for reusable checksum manifests. Use `--direct-file-list-upload` when DUM
+should receive exact direct file paths rather than directory paths. These modes
+are mutually exclusive.
 
-1. Resolve local inventory from `--local-state`, `--local-manifest`, or by crawling `--local-path`.
-2. Choose exactly one processed source: existing state file, manifest, crawl path, or public S3 bucket.
-3. Reconcile local state against processed state.
-4. Upload any pending directories and compactly update the processed state file in use.
+## Utility Scripts
 
-Manifest, crawl, and S3 sources always rebuild their intermediate state file before
-reconcile. Existing state-file sources are reused as-is. Local source precedence is:
-`--local-state`, then `--local-manifest`, then crawl `--local-path`. This lets admins keep
-the real local file path configured for upload while still skipping local inventory work
-when they already have a state file or manifest.
+Most users should use `dummer setup` and `dummer`. These scripts are for manual
+state building, inspection, or specialized workflows.
 
-If a `.env` file sets a processed source but you pass a different processed source on the
-command line, the CLI source wins for that side. If multiple processed sources are set
-within the same source layer, dummer exits with a clear error instead of guessing.
+### `dummer_inventory.py`
 
-If the processed state file is missing and you use `--processed-state`, the app does
-not fail. It treats processed state as empty, so every local directory is considered
-pending until uploads succeed and write entries.
+Build local and/or processed inventory state files without uploading.
 
-## Inventory Sources
+```bash
+python3 dummer_inventory.py [options]
+```
 
-Local inventory sources:
+Common options:
 
-- `--local-state`: reuse a dir/count state file.
-- `--local-manifest`: read a plain-text or gzipped manifest and count files by parent directory.
-- `--local-path`: walk this filesystem root and count direct files when no local state or manifest is provided.
+| Option | Meaning |
+| --- | --- |
+| `--local-out PATH` | Write local inventory state here. |
+| `--local-path DIR` | Crawl this local data/bundle directory. |
+| `--local-manifest PATH` | Build local inventory from a plain-text or `.gz` manifest. |
+| `--local-root PREFIX` | Strip this prefix from local manifest paths. |
+| `--processed-out PATH` | Write processed inventory state here. |
+| `--processed-crawl DIR` | Crawl this processed filesystem directory. |
+| `--processed-manifest PATH` | Build processed inventory from a manifest. |
+| `--processed-root PREFIX` | Strip this prefix from processed paths or S3 keys. |
+| `--processed-s3-bucket BUCKET` | Public S3 bucket to list. |
+| `--processed-s3-prefix PREFIX` | S3 key prefix to list. |
+| `--processed-s3-region REGION` | Optional S3 region. |
+| `--processed-s3-known-dirs-file PATH` | Directory list for exact-prefix S3 counts. |
+| `--processed-s3-known-dirs-workers N` | Concurrent S3 exact-prefix checks. |
+| `--processed-s3-resume-from-state` | Resume S3 inventory from existing processed state. |
+| `--processed-s3-resume-cluster-depth N` | Path component depth used for S3 resume grouping. |
+| `--processed-s3-max-retries N` | Maximum public S3 list retries. |
+| `--processed-s3-retry-delay-seconds N` | Base public S3 retry delay. |
+| `--path-filter`, `--path-filter-depth`, `--crawl-min-depth`, `--crawl-max-depth` | Same behavior as the main command. |
 
-Supplying both `--local-state` and `--local-manifest` is rejected because those are two
-prepared inventory sources for the same side.
+### `dummer_reconcile.py`
 
-Processed inventory sources:
+Compare local and processed state files.
 
-- `--processed-state`: reuse a dir/count state file.
-- `--processed-manifest`: build processed state from a manifest.
-- `--processed-crawl`: walk a filesystem path and count direct files.
-- `--processed-s3-bucket`: build processed state by anonymously listing a public bucket with `ListObjectsV2`.
+```bash
+python3 dummer_reconcile.py --local-state ./local_dirs.txt --processed-state ./processed_dirs.txt
+```
 
-Public S3 mode only works if the bucket grants anonymous `ListBucket` access. Public
-object reads alone are not enough. Folder-marker keys ending in `/` are ignored.
-S3 inventory builds also support request retries plus resume-from-state behavior with
-`--processed-s3-resume-from-state`. Resume trims the existing processed state back to the
-last path-component cluster, trusts earlier clusters, and restarts listing at that
-cluster boundary. The default cluster depth is `2` to preserve existing behavior, and can
-be changed with `--processed-s3-resume-cluster-depth`. This resume mode requires
-`--processed-root` so the tool can reconstruct the full S3 `start-after` key.
+Options:
 
-If you already have a known-directory list, S3 mode can also count those directories with
-exact-prefix requests instead of crawling the whole prefix. Use
-`--processed-s3-known-dirs-file` plus `--processed-s3-known-dirs-workers` to fan out the
-directory counts concurrently. Each exact-prefix request uses S3 delimiter mode so only
-direct child objects are counted for that directory, even when deeper descendants exist.
-In this mode, resume-from-state trusts any existing counts already present in the output
-state file and skips those directories on the next run.
+| Option | Meaning |
+| --- | --- |
+| `--local-state PATH` | Local state file to compare. Required. |
+| `--processed-state PATH` | Processed state file to compare. Required. |
+| `--summary` | Show summary counts instead of listing every pending directory. |
+| `--summary-anchor-component N` | Zero-based path component used as the summary anchor. |
+| `--summary-group-components SPEC` | Comma-separated component indices or labels, such as `0,1` or `collection:0,instrument:1`. |
 
-When `--path-filter` is provided, inventory and upload steps only keep directories whose
-relative path contains that exact component. Crawl mode does not prune by default. If the
-filter is known to live at a specific path depth, `--path-filter-depth N` enables generic
-sibling pruning as a performance hint.
+### `dummer_upload.py`
 
-Filesystem crawl inventory can also be limited by relative directory depth. Direct files
-under the crawl root are counted under the `.` state key at depth `0`. Direct child
-directories under the crawl root are depth `1`, grandchildren are depth `2`, and so on.
-Use `--crawl-max-depth 1` to inventory root files and direct child directories without
-descending into grandchildren. Use `--crawl-max-depth 0` to inventory only root files.
-`--crawl-min-depth` skips shallower directories while still walking deeper ones until
-`--crawl-max-depth` is reached.
+Upload pending folders from already-built state files.
 
-Use `--direct-file-list-upload` when DUM should not receive a directory path at upload
-time. In that mode dummer lists only the direct files in each pending directory, passes
-those file paths to DUM, and does not generate child-directory exclude patterns. Large
-directories are split into multiple DUM commands according to
-`--direct-file-list-batch-size`; the directory is marked processed only after all batches
-validate successfully.
+```bash
+python3 dummer_upload.py --local-state ./local_dirs.txt --processed-state ./processed_dirs.txt
+```
+
+This script uses the same upload and run-behavior settings as `dummer`, and it
+loads `.env` defaults.
 
 ## Examples
 
-Build both state files in one run:
+Run the normal guided setup:
 
 ```bash
-./dummer_inventory.py \
-  --path-filter 2020 \
-  --path-filter-depth 2 \
+dummer setup
+dummer
+```
+
+Process all pending folders from saved setup:
+
+```bash
+dummer --loop
+```
+
+Process a limited batch:
+
+```bash
+dummer --max-dirs 5
+```
+
+Reuse checksum manifests for append-only data:
+
+```bash
+dummer --dum-manifest-store ./dum-manifests --loop
+```
+
+Use this when files in already-seen folders do not change. DUM can reuse the
+stored per-folder manifests on later runs instead of repeating that checksum work.
+
+Build state files manually:
+
+```bash
+python3 dummer_inventory.py \
   --local-out ./local_dirs.txt \
-  --local-manifest /path/to/files.txt.gz \
-  --local-root gbo.ast.catalina.survey \
+  --local-path /data/example.bundle \
   --processed-out ./processed_s3_dirs.txt \
   --processed-s3-bucket example-public-bucket \
-  --processed-s3-prefix gbo.ast.catalina.survey/ \
-  --processed-root gbo.ast.catalina.survey
+  --processed-s3-prefix example.bundle/ \
+  --processed-root example.bundle
 ```
 
-Build processed state from a known directory list with parallel exact-prefix S3 requests:
+Compare two state files:
 
 ```bash
-./dummer_inventory.py \
-  --processed-out ./processed_s3_dirs.txt \
-  --processed-s3-bucket example-public-bucket \
-  --processed-s3-prefix sbn/gbo.ast.catalina.survey/ \
-  --processed-root sbn/gbo.ast.catalina.survey \
-  --processed-s3-known-dirs-file /path/to/dir_list.latest.txt \
-  --processed-s3-known-dirs-workers 10
-```
-
-Filter by any path component, not just numeric/date-like values:
-
-```bash
-./dummer_inventory.py \
-  --path-filter quicklook \
-  --local-out ./quicklook_local_dirs.txt \
-  --local-path /data/example.bundle
-```
-
-Reconcile the two state files:
-
-```bash
-./dummer_reconcile.py \
+python3 dummer_reconcile.py \
   --local-state ./local_dirs.txt \
   --processed-state ./processed_s3_dirs.txt
 ```
 
-Show summary totals anchored and grouped by path components:
+Upload from prepared state files:
 
 ```bash
-./dummer_reconcile.py \
+python3 dummer_upload.py \
+  --local-path /data/example.bundle \
   --local-state ./local_dirs.txt \
-  --processed-state ./processed_s3_dirs.txt \
-  --summary \
-  --summary-anchor-component 2 \
-  --summary-group-components collection:0,instrument:1
-```
-
-Upload from those state files:
-
-```bash
-./dummer_upload.py \
-  --local-path /dsk8/catalina/gbo.ast.catalina.survey \
-  --local-state ./local_dirs.txt \
-  --processed-state ./processed_s3_dirs.txt \
-  --loop
-```
-
-Run upload with live interactive DUM output:
-
-```bash
-./dummer_upload.py \
-  --local-path /dsk8/catalina/gbo.ast.catalina.survey \
-  --local-state ./local_dirs.txt \
-  --processed-state ./processed_s3_dirs.txt \
-  --interactive
-```
-
-Run the full sequential flow in one command:
-
-```bash
-./dummer.py \
-  --local-path /dsk8/catalina/gbo.ast.catalina.survey \
-  --local-manifest /path/to/files.txt.gz \
-  --local-root gbo.ast.catalina.survey \
-  --processed-s3-bucket example-public-bucket \
-  --processed-s3-prefix gbo.ast.catalina.survey/ \
-  --processed-root gbo.ast.catalina.survey \
-  --path-filter 2020 \
-  --path-filter-depth 2 \
-  --summary-anchor-component 2 \
-  --loop
-```
-
-Run the full flow by crawling the local path directly:
-
-```bash
-./dummer.py \
-  --local-path /dsk8/catalina/gbo.ast.catalina.survey \
-  --processed-state ./processed_dirs.txt \
-  --loop
+  --processed-state ./processed_s3_dirs.txt
 ```
