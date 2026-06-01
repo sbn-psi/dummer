@@ -55,6 +55,12 @@ WIZARD_DEST_ORDER: tuple[str, ...] = (
     "direct_file_list_batch_size",
     "max_dirs",
     "loop",
+    "integrity_check",
+    "integrity_run_probability",
+    "integrity_max_dirs",
+    "integrity_max_files",
+    "integrity_dirs",
+    "integrity_report_dir",
 )
 WIZARD_ENV_NAMES = tuple(ENV_VAR_NAMES[dest] for dest in WIZARD_DEST_ORDER)
 
@@ -344,6 +350,22 @@ def _one_based_component_to_index(value: int | None) -> int | None:
     return value - 1
 
 
+def _ask_float(
+    io: WizardIO,
+    question: str,
+    default: float,
+    *,
+    current: str | None = None,
+    help_text: str | tuple[str, ...] | None = None,
+) -> float:
+    while True:
+        raw = io.ask(question, str(default), current=current, help_text=help_text).strip()
+        try:
+            return float(raw)
+        except ValueError:
+            io.warn("Enter a number, such as 1.0 or 0.1.")
+
+
 def _path_parent(path: str | None) -> str | None:
     if not path:
         return None
@@ -454,6 +476,18 @@ HELP_MANIFEST_STORE = (
     "If it does not exist yet, Dummer can create it when you confirm during setup.",
     "You can change this later by rerunning setup, or override it for one run with the command-line option.",
 )
+HELP_INTEGRITY_CHECK = (
+    "This optional fourth stage reads uploaded objects back from the public S3 bucket and compares their bytes with local files.",
+    "It can be expensive: every checked object is downloaded in full, which costs time and may incur S3 egress/transfer charges.",
+    "Leave it off for normal upload-only runs. Turn it on only for scheduled audits, spot checks, or small datasets where full verification is affordable.",
+)
+HELP_INTEGRITY_PROBABILITY = (
+    "This is for repeated or scheduled pipeline runs where byte-for-byte verification is valuable but too expensive to do every time.",
+    "For example, a daily pipeline can set 0.1 so verification runs on about one in ten successful invocations, spreading egress and runtime cost over time while still sampling real completed data.",
+    "Use 1.0 when every pipeline run should include verification, such as small datasets or a temporary confidence-building period after a migration or incident.",
+    "Use a lower value when full egress is expensive, and combine it with max directory or file limits to keep any one selected run bounded.",
+    "The choice is random per invocation, not calendar-based, so it is best for ongoing spot checks rather than a guaranteed monthly audit.",
+)
 
 
 def answers_to_env(answers: dict[str, object]) -> dict[str, str]:
@@ -519,6 +553,17 @@ def answers_to_env(answers: dict[str, object]) -> dict[str, str]:
     env["loop"] = bool(answers.get("loop"))
     env["max_dirs"] = answers.get("max_dirs") or DEFAULTS["max_dirs"]
     env["interactive"] = bool(answers.get("interactive"))
+
+    integrity_check = bool(answers.get("integrity_check"))
+    env["integrity_check"] = integrity_check
+    if integrity_check:
+        env["integrity_run_probability"] = answers.get("integrity_run_probability") or DEFAULTS[
+            "integrity_run_probability"
+        ]
+        env["integrity_max_dirs"] = answers.get("integrity_max_dirs")
+        env["integrity_max_files"] = answers.get("integrity_max_files")
+        env["integrity_dirs"] = answers.get("integrity_dirs")
+        env["integrity_report_dir"] = answers.get("integrity_report_dir")
 
     rendered: dict[str, str] = {}
     for dest in WIZARD_DEST_ORDER:
@@ -1079,6 +1124,53 @@ def collect_answers(
         help_text="Choose yes when running by hand and you want live output. Choose no for quieter scheduled runs; reports are still written.",
     )
 
+    io.section("E2E verification", hint="Optional byte-for-byte public S3 verification after normal processing.")
+    integrity_check = io.ask_yes_no(
+        "Enable e2e byte-for-byte verification?",
+        _current(existing, "integrity_check") == "true",
+        current=_configured_bool(existing, "integrity_check"),
+        help_text=HELP_INTEGRITY_CHECK,
+    )
+    answers["integrity_check"] = integrity_check
+    if integrity_check:
+        run_probability = _ask_float(
+            io,
+            "Chance to run verification on each Dummer invocation",
+            float(_current(existing, "integrity_run_probability") or 1.0),
+            current=_configured(existing, "integrity_run_probability"),
+            help_text=HELP_INTEGRITY_PROBABILITY,
+        )
+        while run_probability < 0.0 or run_probability > 1.0:
+            io.warn("Enter a value between 0.0 and 1.0.")
+            run_probability = _ask_float(
+                io,
+                "Chance to run verification on each Dummer invocation",
+                1.0,
+                help_text=HELP_INTEGRITY_PROBABILITY,
+            )
+        answers["integrity_run_probability"] = run_probability
+        answers["integrity_max_dirs"] = io.ask_int(
+            "Maximum directories to verify per run (blank for no directory limit)",
+            None,
+            current=_configured(existing, "integrity_max_dirs"),
+            help_text="Use this to cap spot checks. Leave blank when a full verification run is acceptable.",
+        )
+        answers["integrity_max_files"] = io.ask_int(
+            "Maximum files to verify per run (blank for no file limit)",
+            None,
+            current=_configured(existing, "integrity_max_files"),
+            help_text="This caps total full-object downloads across all selected directories.",
+        )
+        answers["integrity_report_dir"] = _ask_path(
+            io,
+            "E2E verification report directory",
+            _current(existing, "integrity_report_dir") or str(Path(str(answers.get("pipeline_report_dir") or script_dir)) / "integrity"),
+            current=_configured(existing, "integrity_report_dir"),
+            creatable="dir",
+            help_text="Each verification run writes a unique JSON report here. Downloaded objects are streamed and not kept on disk.",
+            created_directories=created_directories,
+        )
+
     _ensure_auto_managed_state_files(io, answers, created_files=created_files)
 
     io.section("Review")
@@ -1124,6 +1216,10 @@ def _human_summary_lines(answers: dict[str, object]) -> tuple[str, ...]:
         lines.append("Run until pending work is finished or a failure stops the run")
     else:
         lines.append(f"Process at most {answers.get('max_dirs') or 1} folder(s) per run")
+    if answers.get("integrity_check"):
+        lines.append("Run byte-for-byte public S3 verification as a fourth stage")
+    else:
+        lines.append("Leave byte-for-byte public S3 verification off")
     return tuple(lines)
 
 

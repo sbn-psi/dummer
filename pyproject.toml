@@ -8,3 +8,4 @@ dependencies = []
 [project.scripts]
 dummer = "dummer.cli:main"
 dummer-setup = "dummer.wizard:main"
+dummer-integrity = "dummer.integrity:standalone_main"

@@ -170,6 +170,62 @@ class WizardMappingTests(unittest.TestCase):
         self.assertEqual(env["DUMMER_DIRECT_FILE_LIST_BATCH_SIZE"], "25")
         self.assertNotIn("DUMMER_DUM_MANIFEST_STORE", env)
 
+    def test_maps_integrity_check_settings_only_when_enabled(self) -> None:
+        env = answers_to_env(
+            {
+                "local_path": "/data/bundle",
+                "script_dir": ".",
+                "local_source": "crawl",
+                "processed_source": "s3",
+                "processed_s3_bucket": "example-bucket",
+                "processed_s3_prefix": "archive/bundle/",
+                "processed_root": "archive/bundle",
+                "config": "/home/dum/conf.ini",
+                "name": "sbn",
+                "dum_binary": "/usr/local/bin/pds-ingress-client",
+                "threads": 12,
+                "report_dir": "/var/log/dum/reports",
+                "pipeline_report_dir": "/var/log/dum/pipeline",
+                "direct_file_list_upload": False,
+                "loop": True,
+                "interactive": False,
+                "integrity_check": True,
+                "integrity_run_probability": 0.1,
+                "integrity_max_dirs": 2,
+                "integrity_max_files": 50,
+                "integrity_report_dir": "/var/log/dum/integrity",
+            }
+        )
+
+        self.assertEqual(env["DUMMER_INTEGRITY_CHECK"], "true")
+        self.assertEqual(env["DUMMER_INTEGRITY_RUN_PROBABILITY"], "0.1")
+        self.assertEqual(env["DUMMER_INTEGRITY_MAX_DIRS"], "2")
+        self.assertEqual(env["DUMMER_INTEGRITY_MAX_FILES"], "50")
+        self.assertEqual(env["DUMMER_INTEGRITY_REPORT_DIR"], "/var/log/dum/integrity")
+
+        disabled = answers_to_env(
+            {
+                "local_path": "/data/bundle",
+                "script_dir": ".",
+                "local_source": "crawl",
+                "processed_source": "state",
+                "processed_state": "./processed_dirs.txt",
+                "config": "/home/dum/conf.ini",
+                "name": "sbn",
+                "dum_binary": "/usr/local/bin/pds-ingress-client",
+                "threads": 12,
+                "report_dir": "/var/log/dum/reports",
+                "pipeline_report_dir": "/var/log/dum/pipeline",
+                "direct_file_list_upload": False,
+                "loop": True,
+                "interactive": False,
+                "integrity_check": False,
+                "integrity_max_files": 50,
+            }
+        )
+        self.assertEqual(disabled["DUMMER_INTEGRITY_CHECK"], "false")
+        self.assertNotIn("DUMMER_INTEGRITY_MAX_FILES", disabled)
+
 
 class WizardEnvFileTests(unittest.TestCase):
     def test_merge_env_file_preserves_unknowns_clears_old_sources_and_backs_up(self) -> None:

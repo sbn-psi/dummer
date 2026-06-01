@@ -24,6 +24,7 @@ SECTIONS: tuple[str, ...] = (
     "Paths & labels",
     "Upload client",
     "Run behavior",
+    "E2E verification",
     "Review",
 )
 

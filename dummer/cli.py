@@ -6,7 +6,9 @@ from pathlib import Path
 
 from .args import add_path_filter_args, add_summary_args, add_upload_args
 from .console import TimestampedArgumentParser, log
+from .integrity import add_integrity_args, build_integrity_options_from_namespace, run_integrity_check
 from .runtime_config import DEFAULTS, load_config_defaults, log_effective_configuration
+from .state import read_state_file
 from .wizard import run_wizard
 from .workflow import (
     InventoryBuildSpec,
@@ -79,6 +81,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
     add_path_filter_args(p, defaults)
     add_summary_args(p, defaults)
     add_upload_args(p, defaults)
+    add_integrity_args(p, defaults)
 
     return p.parse_args(argv)
 
@@ -242,7 +245,7 @@ def main(argv: list[str] | None = None) -> int:
 
     options = build_upload_options_from_namespace(ns)
     try:
-        return upload_from_reconcile_result(
+        upload_exit_code = upload_from_reconcile_result(
             reconciled,
             processed_state,
             options,
@@ -253,3 +256,31 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError as exc:
         log(f"Error: {exc}")
         return 1
+
+    if upload_exit_code != 0:
+        return upload_exit_code
+
+    integrity_options = build_integrity_options_from_namespace(ns)
+    if not integrity_options.enabled:
+        return upload_exit_code
+
+    try:
+        refreshed_processed_inventory = read_state_file(processed_state)
+        integrity_result = run_integrity_check(
+            local_path=ns.local_path,
+            local_inventory=artifacts.local_inventory,
+            processed_inventory=refreshed_processed_inventory,
+            processed_s3_bucket=ns.processed_s3_bucket,
+            processed_s3_prefix=ns.processed_s3_prefix,
+            processed_root=ns.processed_root,
+            processed_s3_region=ns.processed_s3_region,
+            include_hidden=ns.include_hidden,
+            options=integrity_options,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        log(f"Error: {exc}")
+        return 1
+
+    if integrity_result.status == "failed":
+        return 1
+    return upload_exit_code

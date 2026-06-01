@@ -47,6 +47,15 @@ DEFAULTS: dict[str, object] = {
     "processed_state": None,
     "max_dirs": 1,
     "loop": False,
+    "integrity_check": False,
+    "integrity_run_probability": 1.0,
+    "integrity_max_dirs": None,
+    "integrity_max_files": None,
+    "integrity_dirs": None,
+    "integrity_report_dir": None,
+    "integrity_compare_chunk_bytes": 1048576,
+    "integrity_max_retries": 3,
+    "integrity_retry_delay_seconds": 2.0,
 }
 
 ENV_VAR_NAMES: dict[str, str] = {
@@ -89,6 +98,15 @@ ENV_VAR_NAMES: dict[str, str] = {
     "processed_state": "DUMMER_PROCESSED_STATE",
     "max_dirs": "DUMMER_MAX_DIRS",
     "loop": "DUMMER_LOOP",
+    "integrity_check": "DUMMER_INTEGRITY_CHECK",
+    "integrity_run_probability": "DUMMER_INTEGRITY_RUN_PROBABILITY",
+    "integrity_max_dirs": "DUMMER_INTEGRITY_MAX_DIRS",
+    "integrity_max_files": "DUMMER_INTEGRITY_MAX_FILES",
+    "integrity_dirs": "DUMMER_INTEGRITY_DIRS",
+    "integrity_report_dir": "DUMMER_INTEGRITY_REPORT_DIR",
+    "integrity_compare_chunk_bytes": "DUMMER_INTEGRITY_COMPARE_CHUNK_BYTES",
+    "integrity_max_retries": "DUMMER_INTEGRITY_MAX_RETRIES",
+    "integrity_retry_delay_seconds": "DUMMER_INTEGRITY_RETRY_DELAY_SECONDS",
 }
 
 UPLOAD_RUNTIME_KEYS = (
@@ -119,6 +137,7 @@ def coerce_config_value(dest: str, raw: str) -> object:
         "direct_file_list_upload",
         "include_hidden",
         "loop",
+        "integrity_check",
     }:
         return parse_bool(raw)
     if dest in {
@@ -132,9 +151,13 @@ def coerce_config_value(dest: str, raw: str) -> object:
         "max_dirs",
         "direct_file_list_batch_size",
         "processed_s3_max_retries",
+        "integrity_max_dirs",
+        "integrity_max_files",
+        "integrity_compare_chunk_bytes",
+        "integrity_max_retries",
     }:
         return int(raw)
-    if dest == "processed_s3_retry_delay_seconds":
+    if dest in {"processed_s3_retry_delay_seconds", "integrity_run_probability", "integrity_retry_delay_seconds"}:
         return float(raw)
     value = raw.strip()
     return value or None

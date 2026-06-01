@@ -72,6 +72,9 @@ The normal run flow is:
 4. Upload pending folders.
 5. Update processed state after successful uploads.
 
+An optional byte-for-byte public S3 integrity stage can run after the normal
+workflow. It is completely off unless explicitly enabled.
+
 The setup wizard is the easiest way to choose the right inventory sources. You
 can use a filesystem crawl, an existing file list, an existing state file, a
 processed filesystem mirror, or a public S3 bucket depending on what your
@@ -194,10 +197,54 @@ enough for reusable checksum manifests. Use `--direct-file-list-upload` when DUM
 should receive exact direct file paths rather than directory paths. These modes
 are mutually exclusive.
 
+### E2E Byte Verification
+
+This stage is off by default. When enabled, Dummer selects complete processed
+directories, downloads each selected S3 object as a stream, and compares the
+remote bytes with the local file bytes. It does not use S3 checksum metadata and
+does not keep downloaded files on disk.
+
+Because every checked file is fully read back from S3, this can cost significant
+time and egress. The probability setting is meant for repeated pipeline runs:
+for example, a daily invocation can set `0.1` to perform verification on roughly
+one in ten successful runs, while max directory/file limits keep any selected
+run bounded. Use `1.0` for small datasets or temporary confidence-building runs,
+and use a low value for ongoing spot checks when full egress is expensive.
+
+| Environment variable | Flag | Meaning |
+| --- | --- | --- |
+| `DUMMER_INTEGRITY_CHECK` | `--integrity-check` | Enable the byte-for-byte verification stage. Defaults to off. |
+| `DUMMER_INTEGRITY_RUN_PROBABILITY` | `--integrity-run-probability` | Chance that a run performs verification, from `0.0` to `1.0`. Defaults to `1.0` once enabled. |
+| `DUMMER_INTEGRITY_MAX_DIRS` | `--integrity-max-dirs` | Maximum directories to verify in one run. Blank means no directory cap. |
+| `DUMMER_INTEGRITY_MAX_FILES` | `--integrity-max-files` | Maximum files to download and compare in one run. Blank means no file cap. |
+| `DUMMER_INTEGRITY_DIRS` | `--integrity-dirs` | Comma-separated relative directories to target. |
+| `DUMMER_INTEGRITY_REPORT_DIR` | `--integrity-report-dir` | Directory for unique JSON integrity reports. Defaults to the pipeline report directory when invoked through `dummer`. |
+| `DUMMER_INTEGRITY_COMPARE_CHUNK_BYTES` | `--integrity-compare-chunk-bytes` | Streaming comparison chunk size. Defaults to `1048576`. |
+| `DUMMER_INTEGRITY_MAX_RETRIES` | `--integrity-max-retries` | Retry count for public S3 listing requests. Defaults to `3`. |
+| `DUMMER_INTEGRITY_RETRY_DELAY_SECONDS` | `--integrity-retry-delay-seconds` | Base retry delay for public S3 listing requests. Defaults to `2.0`. |
+
 ## Utility Scripts
 
 Most users should use `dummer setup` and `dummer`. These scripts are for manual
 state building, inspection, or specialized workflows.
+
+### `dummer_integrity.py`
+
+Run the byte-for-byte public S3 verifier directly.
+
+```bash
+python3 dummer_integrity.py \
+  --local-path /data/bundle \
+  --local-state ./local_dirs.txt \
+  --processed-state ./processed_s3_dirs.txt \
+  --processed-s3-bucket example-public-bucket \
+  --processed-s3-prefix archive/bundle/ \
+  --processed-root archive/bundle \
+  --integrity-dir collection/2026/day001 \
+  --integrity-report-dir ./integrity-reports
+```
+
+Installed packages also provide `dummer-integrity`.
 
 ### `dummer_inventory.py`
 
